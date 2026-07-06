@@ -3,6 +3,7 @@
 export interface InvestigationState {
   [key: string]: unknown;
   case_id: string;
+  provider: string;
   account_id: string;
   alert: Record<string, unknown>;
   case_metadata: Record<string, unknown>;
@@ -100,9 +101,17 @@ export const OVERRIDE_ACTIONS = [
 
 export const CASE_IDS = ["CASE-001", "CASE-002", "CASE-003"] as const;
 
-export function initialInput(caseId: string): InvestigationState {
+// Must match _make_llm()'s provider strings in fraud_investigation_demo.py.
+// Gemini listed first (and used as the default selection) since it's free.
+export const PROVIDERS = [
+  { value: "gemini", label: "Gemini (Google, free tier)" },
+  { value: "anthropic", label: "Claude (Anthropic)" },
+] as const;
+
+export function initialInput(caseId: string, provider: string): InvestigationState {
   return {
     case_id: caseId,
+    provider,
     account_id: "",
     alert: {},
     case_metadata: {},

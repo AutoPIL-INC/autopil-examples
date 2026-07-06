@@ -12,6 +12,7 @@ import os
 from typing import Annotated, TypedDict
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import HumanMessage, AIMessage
@@ -28,12 +29,19 @@ class State(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# 2. LLM
+# 2. LLM — Anthropic if you have credits, otherwise Gemini's free tier
+#    (get a key at https://aistudio.google.com/apikey, no cost). Both accept
+#    the same LangChain calling conventions used throughout this repo.
 # ---------------------------------------------------------------------------
-llm = ChatAnthropic(
-    model="claude-opus-4-8",
-    api_key=os.getenv("ANTHROPIC_API_KEY"),
-)
+def _make_llm():
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return ChatAnthropic(model="claude-opus-4-8", api_key=os.getenv("ANTHROPIC_API_KEY"))
+    if os.getenv("GOOGLE_API_KEY"):
+        return ChatGoogleGenerativeAI(model="gemini-3.5-flash", api_key=os.getenv("GOOGLE_API_KEY"))
+    raise RuntimeError("Set ANTHROPIC_API_KEY or GOOGLE_API_KEY in .env (see .env.example)")
+
+
+llm = _make_llm()
 
 
 # ---------------------------------------------------------------------------

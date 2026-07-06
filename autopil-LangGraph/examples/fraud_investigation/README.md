@@ -17,48 +17,61 @@ This means denials are **not guaranteed on every run** — see "What to expect" 
 
 ## Setup
 
-From the repo root:
+From the repo root (`autopil-LangGraph/`):
 
 ```bash
-# 1. Recreate the venv if needed (python3.11)
+# 1. Create the venv (python3.11) and install dependencies
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
 # 2. Install AutoPIL core (editable, from the sibling autopil repo)
 .venv/bin/pip install -e "<path-to-autopil>/packages/core[langgraph]"
 
-# 3. Make sure ANTHROPIC_API_KEY is set in .env at the repo root
+# 3. Copy .env.example to .env and set at least one model API key
+cp .env.example .env
 ```
+
+You need **one** of these two keys in `.env` (both is fine too — see "Choosing a model"
+below):
+
+| Provider | Env var | Cost |
+|---|---|---|
+| Google Gemini | `GOOGLE_API_KEY` | Free — get a key at https://aistudio.google.com/apikey |
+| Anthropic Claude | `ANTHROPIC_API_KEY` | Paid — requires Anthropic API credits |
 
 No manual agent registration step needed — `agent_id` is mandatory on every guarded call
 as of autopil `main`@`485ccb7`, so the demo registers all 5 roles as `status="approved"`
 agents (`AGENT_IDS` in `fraud_investigation_demo.py`) against a real `SQLiteAgentRegistryStore`
 on import, idempotently, before the graph runs.
 
-## Run
+## Run (CLI)
 
 ```bash
 .venv/bin/python examples/fraud_investigation/fraud_investigation_demo.py
 ```
 
 Runs all three cases (CASE-001 structuring, CASE-002 account takeover, CASE-003
-synthetic identity) back to back. Each prints:
+synthetic identity) back to back, unattended. Model selection is automatic here —
+Anthropic if `ANTHROPIC_API_KEY` is set, otherwise Gemini — see "Choosing a model"
+below for how the live viewer differs. Each case prints:
 
 - the orchestrator's initial routing decision and reasoning
 - every tool call each specialist makes, tagged `[ok]` or `[DENIED]`
 - the orchestrator's re-routing reasoning after each specialist finishes
 - the SAR generator's tool calls
-- the deterministic final disposition (rule-based, not LLM-improvised — see DESIGN.md §7.4)
+- the proposed disposition (rule-based, not LLM-improvised — see DESIGN.md §7.4),
+  auto-approved (no prompts — see "Human-in-the-loop review" below)
 - the full AutoPIL audit trail per session, pulled from `guard.get_audit_trail()`
 
 Audit events persist to `fraud_investigation_audit.db` (SQLite, gitignored-equivalent —
 delete freely between runs; each run resets session IDs via `_reset_sessions()`).
 
-## Live viewer
+## Run (live viewer)
 
-The same graph can be watched running live in a browser instead of read from console
-output afterward — every specialist's `[ok]`/`[DENIED]` tool call, routing decision, and
-the final disposition streams in as it happens.
+The same graph, watched running live in a browser instead of read from console output
+afterward — every specialist's tool call, routing decision, and the final disposition
+streams in as it happens, and you get an interactive compliance-review step the CLI
+skips.
 
 ```bash
 # Terminal 1 — serve the graph (from the repo root, i.e. autopil-LangGraph/)
@@ -70,18 +83,43 @@ npm install
 npm run dev
 ```
 
-Open the printed Vite URL (usually `http://localhost:5173`), pick a case, and watch the
-feed populate. This talks to `langgraph dev`'s local API server (`http://localhost:2024`
-by default) via `@langchain/langgraph-sdk`'s `useStream()` — no changes to the CLI path
-above; `fraud_investigation_demo.py:graph` (module-level, compiled at import) is exposed
-to the server via `langgraph.json`, and every node emits the same events to
-`get_stream_writer()` that it prints to the console, so the two are always in sync.
+Open the printed Vite URL (`http://localhost:5173`). Then:
 
-**Human-in-the-loop review**: before the final disposition is written, the run pauses
-and waits for a compliance reviewer to Approve or Override it, with optional notes — see
-the review panel that appears in the feed once a case reaches its outcome. The CLI stays
-fully unattended (`python fraud_investigation_demo.py` auto-approves every case, no
-prompts); the interactive review only happens in the browser. This is why
+1. **Pick a model** from the dropdown — Gemini is the default (free); switch to Claude
+   if you'd rather use Anthropic credits. Whichever you pick must have its key set in
+   `.env` on the server side, or the run fails immediately with a clear error banner
+   (e.g. `GOOGLE_API_KEY not set`) instead of hanging.
+2. **Pick a case** (CASE-001/002/003) to start a run.
+3. **Watch the feed** populate live: green rows for allowed tool calls, red for denied
+   (with the AutoPIL denial reason inline), plus routing decisions and specialist
+   findings as they stream in.
+4. **Review the disposition** — before it's finalized, the run pauses and shows a review
+   panel with the proposed action. Click **Approve** to accept it, or **Override…** to
+   pick a different outcome (with optional notes) — the disposition banner at the top
+   will show whichever you chose, alongside the AutoPIL audit trail totals.
+
+This talks to `langgraph dev`'s local API server (`http://localhost:2024` by default)
+via `@langchain/langgraph-sdk`'s `useStream()`. `fraud_investigation_demo.py:graph`
+(module-level, compiled at import) is exposed to the server via `langgraph.json`, and
+every node emits the same events to `get_stream_writer()` that it prints to the console,
+so the CLI and the live viewer are always showing the same underlying run.
+
+### Choosing a model
+
+Both the CLI and the live viewer go through one `_make_llm(provider)` function. The CLI
+always calls it with `provider=""` (auto: Anthropic if configured, else Gemini) — no UI
+to pick from. The live viewer's dropdown sets `provider` explicitly per run
+(`"anthropic"` or `"gemini"`), threaded through `InvestigationState["provider"]` to every
+node that calls the LLM. Both providers accept the exact same tool-schema dicts and
+`tool_choice="<name>"` convention used throughout this file, so nothing else changes
+between them.
+
+### Human-in-the-loop review
+
+Before the final disposition is written, `decision_node` pauses via LangGraph's
+`interrupt()` and waits for a compliance reviewer to Approve or Override it, with
+optional notes. The CLI stays fully unattended (auto-approves every case, no prompts);
+the interactive review only happens in the browser. This is also why
 `fraud_investigation_demo.py:graph` (the one exposed to `langgraph dev`) and the graph
 `run_case()` builds for the CLI are compiled differently: `interrupt()` needs a
 checkpointer to pause/resume, but `langgraph dev` manages persistence itself and refuses
@@ -132,8 +170,8 @@ to load a graph pre-compiled with one — so the module-level `graph` has none, 
   `simulated_data.py` (`get_expected_outcome`) regardless of which denials occurred along
   the way — that's the point of keeping `decision_node`'s rule-based logic deterministic
   rather than LLM-driven. The *final* disposition can still differ from that if a human
-  reviewer overrides it in the live viewer (see "Live viewer" above); the CLI always
-  auto-approves, so proposed and final match there.
+  reviewer overrides it in the live viewer (see "Human-in-the-loop review" above); the
+  CLI always auto-approves, so proposed and final match there.
 
 ## Files
 
@@ -144,7 +182,7 @@ to load a graph pre-compiled with one — so the module-level `graph` has none, 
 | `policies/financial_services/fraud_investigation.yaml` | Otherwise-unmodified copy of the original policy — see the file header for a fix that had to land upstream in `autopil` (`task_type` support on `protect()`) before `require_task_for_sensitivity` could work through the SDK path |
 | `fraud_investigation_demo.py` | The demo itself |
 | `../../langgraph.json` | Exposes `fraud_investigation_demo.py:graph` to `langgraph dev` for the live viewer |
-| `frontend/` | Minimal Vite + React + TypeScript live audit-trail feed, via `@langchain/langgraph-sdk` |
+| `frontend/` | Vite + React + TypeScript live audit-trail feed, model selector, and compliance-review panel, via `@langchain/langgraph-sdk` |
 
 ## Known constraints (see DESIGN.md §10-11 for the full list)
 

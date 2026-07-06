@@ -1,4 +1,5 @@
 langgraph
 langgraph-cli[inmem]
 langchain-anthropic
+langchain-google-genai
 python-dotenv

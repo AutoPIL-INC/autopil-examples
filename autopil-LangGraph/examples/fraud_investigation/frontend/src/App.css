@@ -46,6 +46,29 @@
   font-size: 14px;
 }
 
+.provider-select {
+  font: inherit;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  color: var(--text-h);
+}
+
+.provider-select:disabled {
+  opacity: 0.5;
+}
+
+.run-error {
+  border: 1px solid var(--denied);
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: var(--denied-bg);
+  color: var(--denied);
+  font-size: 14px;
+}
+
 .disposition-banner {
   border: 1px solid var(--accent);
   border-radius: 8px;

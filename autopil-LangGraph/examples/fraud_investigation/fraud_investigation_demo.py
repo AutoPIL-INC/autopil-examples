@@ -28,6 +28,7 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -83,7 +84,29 @@ _register_agents()
 
 guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
                       agent_registry_store=AGENT_REGISTRY_STORE)
-llm   = ChatAnthropic(model="claude-opus-4-8", api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+
+def _make_llm(provider: str = ""):
+    """Build the LLM for a run. provider is "anthropic", "gemini", or "" (auto: Anthropic
+    if configured, else Gemini) — the live viewer's model dropdown sets this explicitly
+    per run via InvestigationState["provider"]; the CLI leaves it on auto.
+
+    Both providers accept the same tool-schema dicts and tool_choice="<name>" convention
+    used throughout this file, so nothing else needs to change when switching providers.
+    A key at https://aistudio.google.com/apikey is free, for Gemini.
+    """
+    if not provider:
+        provider = "anthropic" if os.getenv("ANTHROPIC_API_KEY") else "gemini"
+    if provider == "anthropic":
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            raise RuntimeError("ANTHROPIC_API_KEY not set (see .env.example)")
+        return ChatAnthropic(model="claude-opus-4-8", api_key=os.getenv("ANTHROPIC_API_KEY"))
+    if provider == "gemini":
+        if not os.getenv("GOOGLE_API_KEY"):
+            raise RuntimeError("GOOGLE_API_KEY not set (see .env.example)")
+        return ChatGoogleGenerativeAI(model="gemini-3.5-flash", api_key=os.getenv("GOOGLE_API_KEY"))
+    raise ValueError(f"Unknown provider: {provider!r}")
+
 
 SPECIALIST_ROLES = ["transaction_analyst", "account_profiler", "kyc_specialist"]
 
@@ -239,6 +262,7 @@ class DenialEvent(TypedDict):
 
 class InvestigationState(TypedDict):
     case_id: str
+    provider: str  # "anthropic" | "gemini" | "" (auto) — which LLM this run uses, see _make_llm()
     account_id: str
     alert: dict
     case_metadata: dict
@@ -270,7 +294,7 @@ _FINDING_TOOL_SCHEMA = {
 
 
 def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
-                   tools: list, denial_log: list[DenialEvent]) -> tuple[Optional[Finding], list[DenialEvent]]:
+                   tools: list, denial_log: list[DenialEvent], llm) -> tuple[Optional[Finding], list[DenialEvent]]:
     """Run one agent's Claude tool-calling loop to completion (or MAX_TOOL_TURNS)."""
     tool_map = {t.name: t for t in tools}
     bound = llm.bind_tools([*tools, _FINDING_TOOL_SCHEMA])
@@ -475,7 +499,7 @@ def orchestrator_node(state: InvestigationState) -> dict:
             "required": ["route"],
         },
     }
-    bound = llm.bind_tools([route_schema], tool_choice="set_route")
+    bound = _make_llm(state["provider"]).bind_tools([route_schema], tool_choice="set_route")
     prompt = (
         f"Fraud alert for {case_id}:\n{json.dumps(alert, indent=2)}\n\n"
         f"Decide which specialist agents should investigate, and in what order. "
@@ -510,7 +534,7 @@ def _run_specialist(role: str, state: InvestigationState) -> dict:
     )
     denial_log = list(state["denial_log"])
     finding, _ = run_tool_loop(role, f"You are a {role.replace('_',' ')} at a bank's financial crimes unit.",
-                                brief, tools, denial_log)
+                                brief, tools, denial_log, _make_llm(state["provider"]))
     findings = dict(state["findings"])
     findings[role] = finding or {"summary": "No finding submitted", "recommendation": "UNKNOWN"}
     specialists_run = [*state["specialists_run"], role]
@@ -553,7 +577,7 @@ def orchestrator_review_node(state: InvestigationState) -> dict:
             "required": ["next"],
         },
     }
-    bound = llm.bind_tools([decide_schema], tool_choice="decide_next")
+    bound = _make_llm(state["provider"]).bind_tools([decide_schema], tool_choice="decide_next")
     prompt = (
         f"Case {state['case_id']}. Specialists run so far: {state['specialists_run']}.\n"
         f"Findings so far:\n{json.dumps(state['findings'], indent=2)}\n\n"
@@ -587,7 +611,7 @@ def sar_generator_node(state: InvestigationState) -> dict:
     )
     denial_log = list(state["denial_log"])
     finding, _ = run_tool_loop("sar_generator", "You are a SAR compliance writer at a bank's financial crimes unit.",
-                                brief, tools, denial_log)
+                                brief, tools, denial_log, _make_llm(state["provider"]))
     sar_draft = finding or {}
     _emit({"type": "finding", "role": "sar_generator", "finding": sar_draft})
     return {"sar_draft": sar_draft, "denial_log": denial_log}
@@ -752,7 +776,7 @@ def run_case(case_id: str) -> None:
     cli_graph = build_graph(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": f"cli-{case_id}"}}
     result = cli_graph.invoke({
-        "case_id": case_id, "account_id": "", "alert": {}, "case_metadata": {},
+        "case_id": case_id, "provider": "", "account_id": "", "alert": {}, "case_metadata": {},
         "route_plan": [], "specialists_run": [], "findings": {}, "sar_draft": {},
         "denial_log": [], "orchestration_steps": 0, "final_decision": "",
     }, config=config)

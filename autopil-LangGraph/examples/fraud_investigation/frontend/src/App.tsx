@@ -3,6 +3,7 @@ import { useStream } from "@langchain/langgraph-sdk/react";
 import {
   CASE_IDS,
   OVERRIDE_ACTIONS,
+  PROVIDERS,
   initialInput,
   type FeedEvent,
   type InterruptPayload,
@@ -139,6 +140,7 @@ function FeedItem({ event }: { event: FeedEvent }) {
 export default function App() {
   const [feed, setFeed] = useState<FeedEvent[]>([]);
   const [disposition, setDisposition] = useState<(FeedEvent & { type: "disposition" }) | null>(null);
+  const [provider, setProvider] = useState<string>(PROVIDERS[0].value);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
   const stream = useStream<InvestigationState>({
@@ -159,7 +161,7 @@ export default function App() {
   const runCase = (caseId: string) => {
     setFeed([]);
     setDisposition(null);
-    stream.submit(initialInput(caseId), { streamMode: ["custom"] });
+    stream.submit(initialInput(caseId, provider), { streamMode: ["custom"] });
   };
 
   const approve = () => {
@@ -181,6 +183,16 @@ export default function App() {
       </header>
 
       <div className="case-picker">
+        <select
+          className="provider-select"
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+          disabled={stream.isLoading || !!interruptPayload}
+        >
+          {PROVIDERS.map((p) => (
+            <option key={p.value} value={p.value}>{p.label}</option>
+          ))}
+        </select>
         {CASE_IDS.map((caseId) => (
           <button key={caseId} onClick={() => runCase(caseId)} disabled={stream.isLoading || !!interruptPayload}>
             Run {caseId}
@@ -188,6 +200,12 @@ export default function App() {
         ))}
         {stream.isLoading && <span className="running-indicator">running…</span>}
       </div>
+
+      {stream.error != null && (
+        <div className="run-error">
+          Run failed: {String((stream.error as { message?: string })?.message ?? stream.error)}
+        </div>
+      )}
 
       {interruptPayload && (
         <ReviewPanel payload={interruptPayload} onApprove={approve} onOverride={override} />
