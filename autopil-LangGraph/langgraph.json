@@ -1,7 +1,8 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "fraud_investigation": "./examples/fraud_investigation/fraud_investigation_demo.py:graph"
+    "fraud_investigation": "./examples/fraud_investigation/fraud_investigation_demo.py:graph",
+    "client_analysis": "./examples/client_analysis/client_analysis_demo.py:graph"
   },
   "env": ".env"
 }

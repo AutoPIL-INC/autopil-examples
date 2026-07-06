@@ -1,7 +1,7 @@
 # Fraud Investigation Multi-Agent Demo — Design Doc
 
 Status: implemented — see `fraud_investigation_demo.py`, `README.md`
-Depends on: real `autopil` package (editable install from `../autopil/packages/core`)
+Depends on: real `autopil` package (`autopil[langgraph]>=0.10.0` from PyPI)
 
 ## 1. Why this demo, and why now
 
@@ -22,19 +22,19 @@ The point of this demo is to show that mitigation working — not against a scri
 "agent tries to do the bad thing," but against a real model that has genuine discretion
 over which tools it calls, and can genuinely reason its way toward crossing a boundary.
 
-## 2. What's different from the existing `autopil/examples/fraud_investigation` demo
+## 2. Design approach: reasoning-driven agents, not scripted logic
 
-| | Original demo | This demo |
-|---|---|---|
-| Specialist reasoning | Hardcoded `if/elif` on data flags | Real `ChatAnthropic` tool-calling loop per agent |
-| Tool access per agent | Only the functions the role is authorized for exist in scope | Each agent is handed a toolbelt *wider* than its authorization — including tools it should never successfully call |
-| "Violation attempts" | Scripted: a designated function forces a specific denied call at a fixed point in the script | Emergent: the model decides for itself, given an ambiguous case brief, whether it needs a tool outside its scope |
-| Orchestrator routing | Fixed edge list (`orchestrator → transaction_analyst → account_profiler → kyc_specialist → sar_generator`) | LLM-driven: orchestrator reads the alert and decides which specialists to invoke, and can re-route after a denial |
-| Governance enforcement | `guard.protect()` — unchanged | `guard.protect()` — unchanged. This is the point: the enforcement layer doesn't need to change when the agent gets smarter/more autonomous. |
-| Final disposition | Deterministic flag logic | Stays deterministic flag logic (unchanged — see §6) |
+| | This demo |
+|---|---|
+| Specialist reasoning | Real `ChatAnthropic` (or other provider) tool-calling loop per agent |
+| Tool access per agent | Each agent is handed a toolbelt *wider* than its authorization — including tools it should never successfully call |
+| "Violation attempts" | Emergent: the model decides for itself, given an ambiguous case brief, whether it needs a tool outside its scope |
+| Orchestrator routing | LLM-driven: orchestrator reads the alert and decides which specialists to invoke, and can re-route after a denial |
+| Governance enforcement | `guard.protect()` on every tool call — the enforcement layer doesn't need to change when the agent gets smarter/more autonomous |
+| Final disposition | Deterministic flag logic (unchanged — see §6) |
 
-The enforcement code is intentionally the *same* AutoPIL mechanism as the original demo.
-What changes is that we stop asserting a violation will happen and instead give a model
+The enforcement code is a standard AutoPIL `guard.protect()` call at every tool site.
+The interesting part is that we never assert a violation will happen — we give the model
 room to decide, which is a more credible demonstration that the boundary holds
 regardless of what the agent wants to do.
 
@@ -55,22 +55,20 @@ regardless of what the agent wants to do.
 examples/fraud_investigation/
 ├── DESIGN.md                                        # this file
 ├── README.md                                        # setup + run instructions
-├── simulated_data.py                                # reused as-is from autopil/examples/fraud_investigation
-├── policies/financial_services/fraud_investigation.yaml   # reused as-is
-└── fraud_investigation_demo.py                      # new — reasoning-driven orchestration
+├── simulated_data.py                                # fixture data — accounts, transactions, alerts, KYC records
+├── policies/financial_services/fraud_investigation.yaml   # the 5-role AutoPIL policy matrix
+└── fraud_investigation_demo.py                      # reasoning-driven orchestration
 ```
 
-`simulated_data.py` and the policy YAML are copied verbatim from the existing autopil
-demo — 5 accounts, 50 transactions, 3 fraud alerts (structuring / account takeover /
-synthetic identity), KYC records, and the 5-role policy matrix with BSA/OFAC/FinCEN
-mapping. No reason to re-derive fixture data that's already correct and matches the
-policy exactly.
+`simulated_data.py` and the policy YAML hold the fixture data and policy matrix this
+demo runs against — 5 accounts, 50 transactions, 3 fraud alerts (structuring / account
+takeover / synthetic identity), KYC records, and the 5-role policy matrix with
+BSA/OFAC/FinCEN mapping.
 
 ## 5. Environment
 
-- Additional dependency: `pip install -e "<path-to-autopil>/packages/core[langgraph]"`
-  — editable install of the sibling repo. Documented in README, not silently added to
-  `requirements.txt` (a local sibling path isn't portable).
+- Additional dependency: `autopil[langgraph]>=0.10.0`, published to PyPI — listed
+  directly in `requirements.txt`.
 - `ANTHROPIC_API_KEY` already required by `01_basics.py` via `.env` — reused.
 
 ## 6. State shape
@@ -123,9 +121,8 @@ class InvestigationState(TypedDict):
 - **The toolbelt is intentionally over-scoped.** `transaction_analyst`'s tools include
   its 5 authorized sources *and* `identity_data` / `account_pii` — sources its policy
   denies. The model is never told which tools are off-limits; it finds out from the
-  `PermissionError` that comes back as a tool result, same as the original demo's
-  runtime behavior, except now the *decision to try* is the model's own, not a scripted
-  branch.
+  `PermissionError` that comes back as a tool result, and the *decision to try* is the
+  model's own, not a scripted branch.
 - A denial doesn't crash the node — the caught `PermissionError` becomes a `ToolMessage`
   with the reason, and the model reasons over it on its next turn (accept the boundary
   and produce a finding without that data, or ask the orchestrator to route the request
@@ -154,22 +151,21 @@ An LLM can draft the narrative; it shouldn't decide the compliance action.
 |---|---|
 | `guard.protect()` role/source matrix | Every tool call, in-scope or not, regardless of which agent or how many turns of reasoning led to it |
 | Session isolation | `sar_generator` offered a tool that reads via `transaction_analyst`'s `session_id` |
-| Audit trail (hash-chained) | Printed per-session after each scenario, same as the original demo |
+| Audit trail (hash-chained) | Printed per-session after each scenario |
 | `LineageStoreBase.get_actions_for_session()` | New: reconstruct each agent's full tool-call sequence in order, so a denial can be shown in context ("tried X, got denied, then correctly asked for Y") — addresses the "standard logs don't show the full action chain" gap from the NHI article |
 | `denial_type` classification | Shown per denial (policy vs. session isolation) |
 | `sensitivity_decay` / `session_ttl_minutes` | Not the focus of this demo, but present in the reused policy YAML — could be called out as a stretch scenario later (a long-running investigation session losing access to `critical` sources mid-case) |
 
 ## 9. Scenarios
 
-Same three underlying cases as the original demo (CASE-001 structuring, CASE-002 account
-takeover, CASE-003 synthetic identity), run through the reasoning-driven graph instead of
-the scripted one. Because the model decides for itself whether to reach for an
-out-of-scope tool, a boundary-crossing *attempt* is a probable outcome given the
-over-scoped toolbelt and an ambiguous case brief — but not a guaranteed one per run. That
-non-determinism is disclosed as a property of the demo, not hidden:
+Three underlying cases (CASE-001 structuring, CASE-002 account takeover, CASE-003
+synthetic identity), run through the reasoning-driven graph. Because the model decides
+for itself whether to reach for an out-of-scope tool, a boundary-crossing *attempt* is a
+probable outcome given the over-scoped toolbelt and an ambiguous case brief — but not a
+guaranteed one per run. That non-determinism is disclosed as a property of the demo, not
+hidden:
 
-- If the model stays in-bounds: the demo shows clean investigation + full audit lineage
-  (same value as the original happy path).
+- If the model stays in-bounds: the demo shows clean investigation + full audit lineage.
 - If the model reaches out of bounds: the demo shows the denial, the model's recovery
   (or failure to recover), and the completed investigation despite the attempt — the
   more compelling case, and the one the industry research points at as the actual risk.
@@ -188,10 +184,10 @@ module docstring for the full account/transaction/KYC data.
 
 ## 10. Open questions before implementation
 
-1. **Cost/latency** — each specialist is now a multi-turn tool-calling loop instead of
-   one `llm.invoke()`. Three specialists + orchestrator + sar_generator, each up to ~5
-   turns, is a meaningfully larger number of API calls per scenario run than the
-   original demo. Acceptable for a demo script; worth knowing going in.
+1. **Cost/latency** — each specialist is a multi-turn tool-calling loop instead of one
+   `llm.invoke()`. Three specialists + orchestrator + sar_generator, each up to ~5 turns,
+   is a meaningful number of API calls per scenario run. Acceptable for a demo script;
+   worth knowing going in.
 2. **Non-determinism in a demo** — do we want a "seed" case brief that's been tested to
    reliably surface a boundary attempt at least once for the recorded/shared version of
    this demo, while still being honest that it's model-driven rather than scripted?

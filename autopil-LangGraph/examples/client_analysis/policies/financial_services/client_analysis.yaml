@@ -1,0 +1,129 @@
+# Governance policy for the AutoPIL x Databricks Unity Catalog demo. Source IDs use
+# the catalog.schema.table naming a real Unity Catalog deployment would produce
+# (see simulated_uc_data.py and README.md's real-workspace appendix) — AutoPIL enforces
+# on those IDs the same way regardless of whether they came from a real UC table or a
+# local fixture.
+industry: financial_services
+organization: Wealth_Investment_Management
+division: Wealth & Investment Management
+process_group: client_analysis
+
+regulations:
+  - id: GLBA
+    name: "Gramm-Leach-Bliley Act — Consumer Financial Data"
+    applicable_rules:
+      - rule: "Customer PII and transaction history denied to junior analysts"
+        how_enforced: "junior_analyst_policy denied_sources blocks customer_pii, transaction_history; max_sensitivity: medium"
+  - id: GDPR-Art5
+    name: "GDPR Art. 5(1)(b) — Purpose Limitation"
+    applicable_rules:
+      - rule: "Wealth advisors may not access raw customer PII — must use portfolio objects instead"
+        how_enforced: "wealth_advisor_policy denied_sources blocks customer_pii; task_bindings restrict each task to its own permitted sources"
+  - id: FCRA
+    name: "Fair Credit Reporting Act — Permissible Purpose"
+    applicable_rules:
+      - rule: "Credit report data may only be pulled for a credit-analysis purpose, not general account review"
+        how_enforced: "senior_analyst_policy task_bindings restrict credit_analysis to catalog.finance.credit_scores and catalog.finance.risk_models only — customer_pii is allowed generally but not bound to this task, so pulling it under a credit_analysis task_type is denied as a purpose-limitation violation, not a source-access violation"
+
+policies:
+
+  # Junior analyst — market research and public reporting only; PII and transaction
+  # history denied outright regardless of task.
+  - name: junior_analyst_policy
+    description: "Junior analyst — market research and reporting only; PII denied"
+    agent_role: junior_analyst
+    allowed_sources:
+      - catalog.finance.market_data
+      - catalog.finance.public_reports
+    denied_sources:
+      - catalog.finance.customer_pii
+      - catalog.finance.transaction_history
+      - catalog.finance.stress_test_models
+    allowed_tasks:
+      - market_research
+      - portfolio_review
+      - client_reporting
+    denied_tasks:
+      - model_training
+      - bulk_data_export
+      - raw_data_dump
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: market_research
+        permitted_sources: [catalog.finance.market_data, catalog.finance.public_reports]
+      - task: portfolio_review
+        permitted_sources: [catalog.finance.market_data, catalog.finance.public_reports]
+      - task: client_reporting
+        permitted_sources: [catalog.finance.public_reports]
+    session_ttl_minutes: 60
+
+  # Senior analyst — broader source access, but purpose limitation via task_bindings,
+  # and stress_test_models (critical sensitivity) blocked by the sensitivity ceiling
+  # regardless of source/task authorization — max_sensitivity: high, not critical.
+  - name: senior_analyst_policy
+    description: "Senior analyst — high-sensitivity access; purpose limitation via task_bindings; critical data blocked by sensitivity ceiling"
+    agent_role: senior_analyst
+    allowed_sources:
+      - catalog.finance.market_data
+      - catalog.finance.public_reports
+      - catalog.finance.customer_pii
+      - catalog.finance.transaction_history
+      - catalog.finance.credit_scores
+      - catalog.finance.risk_models
+      - catalog.finance.stress_test_models
+    denied_sources: []
+    allowed_tasks:
+      - market_research
+      - portfolio_review
+      - client_reporting
+      - credit_analysis
+      - risk_assessment
+    denied_tasks:
+      - model_training
+      - bulk_data_export
+      - raw_data_dump
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: credit_analysis
+        permitted_sources: [catalog.finance.credit_scores, catalog.finance.risk_models]
+      - task: risk_assessment
+        permitted_sources: [catalog.finance.transaction_history, catalog.finance.risk_models]
+    session_ttl_minutes: 120
+
+  # Wealth advisor — portfolio-focused; raw customer PII denied (GDPR Art.5 data
+  # minimization) — must work from client_portfolios instead.
+  - name: wealth_advisor_policy
+    description: "Wealth advisor — portfolio-focused; raw PII denied (GDPR Art.5 data minimization)"
+    agent_role: wealth_advisor
+    allowed_sources:
+      - catalog.finance.client_portfolios
+      - catalog.finance.credit_scores
+      - catalog.finance.market_data
+      - catalog.finance.risk_models
+      - catalog.finance.public_reports
+    denied_sources:
+      - catalog.finance.customer_pii
+      - catalog.finance.transaction_history
+      - catalog.finance.stress_test_models
+    allowed_tasks:
+      - portfolio_review
+      - client_reporting
+      - wealth_planning
+      - market_research
+    denied_tasks:
+      - model_training
+      - bulk_data_export
+      - raw_data_dump
+      - credit_analysis
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: portfolio_review
+        permitted_sources: [catalog.finance.client_portfolios, catalog.finance.market_data]
+      - task: wealth_planning
+        permitted_sources: [catalog.finance.client_portfolios, catalog.finance.credit_scores]
+      - task: client_reporting
+        permitted_sources: [catalog.finance.client_portfolios, catalog.finance.market_data, catalog.finance.risk_models]
+    session_ttl_minutes: 120

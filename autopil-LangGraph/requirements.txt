@@ -1,7 +1,9 @@
+autopil[langgraph]>=0.10.0
 langgraph
 langgraph-cli[inmem]
 langchain-anthropic
 langchain-google-genai
 langchain-groq
 langchain-ollama
+langchain-aws
 python-dotenv

@@ -12,17 +12,27 @@ as a whole.
   its [DESIGN.md](./examples/fraud_investigation/DESIGN.md) for the full design rationale
   and [README.md](./examples/fraud_investigation/README.md) for setup/run instructions,
   including the live browser viewer (`langgraph dev` + `examples/fraud_investigation/frontend/`).
+- `examples/client_analysis/` — 3 roles (junior/senior analyst, wealth advisor) share
+  the exact same Databricks Unity Catalog toolbelt; AutoPIL's policy — not the tool
+  layer — decides what each role can actually reach, including `task_bindings` purpose
+  limitation and a sensitivity-ceiling case. AWS Bedrock-first provider chain. See its
+  [DESIGN.md](./examples/client_analysis/DESIGN.md) and
+  [README.md](./examples/client_analysis/README.md).
+- `frontend/` — a third, **additive** frontend covering both demos from one
+  `langgraph dev` server, so you don't need two `npm run dev` processes. Each demo's
+  own standalone frontend (`examples/*/frontend/`) is untouched and still works
+  independently — see [frontend/README.md](./frontend/README.md). The demo-specific
+  files under `frontend/src/demos/<name>/` are copies of each standalone frontend's
+  `src/` (not shared via a package), so a change to one needs to be copied to the
+  other by hand if it should apply everywhere.
 
 ## Setup notes
 
 - Shared `.venv` at the repo root for both examples. It's tied to this absolute path —
   recreate it (`python3.11 -m venv .venv`) if this directory ever moves.
-- `autopil` is installed editable from a **sibling repo**
-  (`../autopil/packages/core[langgraph]`), not from PyPI. That sibling repo is not part
-  of this examples repo and won't exist on a machine that only clones
-  `autopil-examples` — anyone setting this up elsewhere needs their own clone of
-  `autopil` alongside it, or `pip install autopil` from PyPI once the demo no longer
-  needs an unreleased fix.
+- `autopil[langgraph]>=0.10.0` is installed straight from PyPI, listed in
+  `requirements.txt`. `0.10.0` is the first PyPI release with `task_type` support on
+  `ContextGuard.protect()`, which this demo requires.
 - `ANTHROPIC_API_KEY` (and friends) live in `.env`, which is gitignored — never commit
   it. `.env.example` documents the required keys.
 - Both scripts pick a model via a `_make_llm()` helper. The fraud demo's version tries,
@@ -53,4 +63,24 @@ as a whole.
 - It's intentionally non-deterministic — see DESIGN.md §9. A run with zero denials, or
   different denials than a previous run, is a valid outcome, not a regression.
 - The audit database `examples/fraud_investigation/fraud_investigation_audit.db` is
+  disposable — safe to delete between runs.
+
+## Working with the client_analysis demo
+
+- Also intentionally non-deterministic, same reasoning as the fraud demo. Don't trust a
+  role's self-reported `outcome` (COMPLETED/BLOCKED) at face value in `decision_node` —
+  live-tested with Ollama's qwen2.5:7b and it claimed COMPLETED once after every single
+  tool call in its run had been denied. `decision_node` cross-checks against the actual
+  audit trail (did the role get any ALLOW at all) before trusting a COMPLETED claim.
+- Bedrock (`ChatBedrockConverse` via `langchain-aws`) is the flagship provider here,
+  opted into via `AWS_BEDROCK_MODEL_ID` being set (not ambient AWS credential sniffing).
+  Verified directly against the installed `langchain-aws` source, not assumed: forcing a
+  specific tool via `tool_choice=<name>` works for Anthropic-on-Bedrock models but
+  **raises `ValueError` at `bind_tools()` time** for models whose
+  `supports_tool_choice_values` doesn't include `"tool"` (e.g. Llama-family Bedrock
+  models) — a different failure mode than Ollama's silent ignore. `_bind_forced()`
+  catches this and falls back to unforced binding either way, so `orchestrator_node`'s
+  `if response.tool_calls` guard still matters regardless of which provider produced the
+  response.
+- The audit database `examples/client_analysis/client_analysis_audit.db` is
   disposable — safe to delete between runs.

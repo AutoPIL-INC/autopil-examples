@@ -20,14 +20,11 @@ This means denials are **not guaranteed on every run** — see "What to expect" 
 From the repo root (`autopil-LangGraph/`):
 
 ```bash
-# 1. Create the venv (python3.11) and install dependencies
+# 1. Create the venv (python3.11) and install dependencies, including AutoPIL from PyPI
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# 2. Install AutoPIL core (editable, from the sibling autopil repo)
-.venv/bin/pip install -e "<path-to-autopil>/packages/core[langgraph]"
-
-# 3. Copy .env.example to .env and set at least one model API key
+# 2. Copy .env.example to .env and set at least one model API key
 cp .env.example .env
 ```
 
@@ -42,7 +39,7 @@ model" below):
 | Ollama | *(none — local)* | Free — needs `ollama serve` running and a model pulled |
 
 No manual agent registration step needed — `agent_id` is mandatory on every guarded call
-as of autopil `main`@`485ccb7`, so the demo registers all 5 roles as `status="approved"`
+as of autopil `0.10.0`, so the demo registers all 5 roles as `status="approved"`
 agents (`AGENT_IDS` in `fraud_investigation_demo.py`) against a real `SQLiteAgentRegistryStore`
 on import, idempotently, before the graph runs.
 
@@ -198,8 +195,9 @@ to load a graph pre-compiled with one — so the module-level `graph` has none, 
   full runs. The underlying call uses `sar_generator`'s own real registered `agent_id`
   but claims `agent_role="kyc_specialist"` to reach `identity_data` — a source
   `kyc_specialist_policy` genuinely allows, so this tests the registry's role lock
-  (`role_not_permitted`), not a source-based denial. This is the live version of the
-  gap closed by autopil `main`@`485ccb7` — see DESIGN.md §12 item 4.
+  (`role_not_permitted`), not a source-based denial — proving the claimed `agent_role`
+  is validated against the registry's canonical value for that `agent_id`, not trusted
+  from the caller.
 - **The *proposed* disposition always matches the case's ground truth** in
   `simulated_data.py` (`get_expected_outcome`) regardless of which denials occurred along
   the way — that's the point of keeping `decision_node`'s rule-based logic deterministic
@@ -211,9 +209,9 @@ to load a graph pre-compiled with one — so the module-level `graph` has none, 
 
 | File | What it is |
 |---|---|
-| `DESIGN.md` | Design rationale — why this demo exists, what's different from AutoPIL's original scripted version, open questions |
-| `simulated_data.py` | Fixture data — 7 accounts, 72 transactions, 5 fraud alerts, KYC records. CASE-001/002/003 and their 5 accounts are reused as-is from `autopil/examples/fraud_investigation`; CASE-004 (elder financial exploitation) and CASE-005 (money mule / check kiting) were added later, original to this repo |
-| `policies/financial_services/fraud_investigation.yaml` | Otherwise-unmodified copy of the original policy — see the file header for a fix that had to land upstream in `autopil` (`task_type` support on `protect()`) before `require_task_for_sensitivity` could work through the SDK path |
+| `DESIGN.md` | Design rationale — why this demo exists, the reasoning-driven design approach, open questions |
+| `simulated_data.py` | Fixture data — 7 accounts, 72 transactions, 5 fraud alerts, KYC records. CASE-001/002/003 cover structuring, account takeover, and synthetic identity; CASE-004 (elder financial exploitation) and CASE-005 (money mule / check kiting) were added later |
+| `policies/financial_services/fraud_investigation.yaml` | The 5-role AutoPIL policy matrix — see the file header for a fix that had to land upstream in `autopil` (`task_type` support on `protect()`) before `require_task_for_sensitivity` could work through the SDK path |
 | `fraud_investigation_demo.py` | The demo itself |
 | `../../langgraph.json` | Exposes `fraud_investigation_demo.py:graph` to `langgraph dev` for the live viewer |
 | `frontend/` | Vite + React + TypeScript live audit-trail feed, model selector, and compliance-review panel, via `@langchain/langgraph-sdk` |

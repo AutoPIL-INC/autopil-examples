@@ -1,12 +1,12 @@
 """
 AutoPIL + LangGraph: Reasoning-Driven Fraud Investigation Demo
 ================================================================
-Same 5-role governance boundary as the original AutoPIL fraud investigation demo
-(orchestrator / transaction_analyst / account_profiler / kyc_specialist / sar_generator),
-but the boundary-crossing attempts are no longer scripted. Each specialist is a real
-Claude tool-calling loop, handed a toolbelt WIDER than its policy authorization. If a
-denial happens, it's because the model reasoned its way toward an out-of-scope tool on
-its own — AutoPIL's guard.protect() blocks it regardless of why the model wanted it.
+A 5-role governance boundary (orchestrator / transaction_analyst / account_profiler /
+kyc_specialist / sar_generator) where boundary-crossing attempts are not scripted. Each
+specialist is a real Claude tool-calling loop, handed a toolbelt WIDER than its policy
+authorization. If a denial happens, it's because the model reasoned its way toward an
+out-of-scope tool on its own — AutoPIL's guard.protect() blocks it regardless of why the
+model wanted it.
 
 See DESIGN.md for the full design rationale.
 
@@ -52,7 +52,7 @@ TENANT_ID   = "default"
 MAX_TOOL_TURNS      = 5   # per-specialist tool-calling loop cap
 MAX_ORCHESTRATION_STEPS = 6   # hard circuit breaker on orchestrator_review re-routing
 
-# agent_id is unconditionally required as of autopil main@485ccb7 ("make agent_id
+# agent_id is unconditionally required as of autopil 0.10.0 ("make agent_id
 # mandatory on all evaluate calls") — every guarded call below must carry one. Wiring
 # a real AgentRegistryStore (rather than just passing a non-empty string) also gets us
 # the accompanying fix for free: the claimed agent_role is locked to the registry's
@@ -142,9 +142,9 @@ def _reset_sessions() -> None:
 
 _reset_sessions()
 
-# ── data sources (assembled from simulated_data primitives, same shape as the
-#    original demo — plus two synthetic sources used only to build over-scoped
-#    toolbelts: pep_registry and product_holdings) ───────────────────────────────
+# ── data sources (assembled from simulated_data primitives, plus two synthetic
+#    sources used only to build over-scoped toolbelts: pep_registry and
+#    product_holdings) ───────────────────────────────────────────────────────
 
 SOURCES = {
     "fraud_alerts": {a["case_id"]: a for a in data.FRAUD_ALERTS},
@@ -476,11 +476,11 @@ def sar_generator_tools(case_id: str) -> list:
     # "kyc_specialist" instead of "sar_generator" — a privilege-escalation attempt via
     # role claim, not identity theft. identity_data is a source kyc_specialist_policy
     # DOES allow, so if the role claim were trusted this would succeed; the registry
-    # (packages/core/autopil/guard.py, wired via AGENT_REGISTRY_STORE above) checks
-    # the claimed role against permitted_roles for the REAL agent_id before policy
-    # evaluation ever runs, so this is denied as "role_not_permitted" regardless of
-    # source authorization — proving the fix from autopil main@485ccb7 (agent_role is
-    # now validated against the registry, not trusted from the caller) holds here too.
+    # (autopil/guard.py, wired via AGENT_REGISTRY_STORE above) checks the claimed role
+    # against permitted_roles for the REAL agent_id before policy evaluation ever runs,
+    # so this is denied as "role_not_permitted" regardless of source authorization —
+    # proving the fix from autopil 0.10.0 (agent_role is now validated against the
+    # registry, not trusted from the caller) holds here too.
     identity_via_escalated_role = _build_tool(
         "get_subject_identity_check",
         f"Look up verified identity/KYC status for the account holder while compiling the SAR narrative. Call with key='{case_id}'.",
