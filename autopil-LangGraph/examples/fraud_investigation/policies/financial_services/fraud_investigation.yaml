@@ -1,0 +1,280 @@
+# NOTE: adapted from autopil/policies/financial_services/fraud_investigation.yaml for this
+# demo — otherwise unmodified. `require_task_for_sensitivity` initially had to be removed
+# here because ContextGuard.protect() had no task_type parameter, so the gate could never
+# be satisfied and denied every authorized call at or above the threshold sensitivity.
+# Fixed upstream on autopil main (commit 04c7788, "add task_type to protect/protect_async
+# decorator API") — protect() now accepts task_type and threads it through to
+# ContextRequest. Restored here; fraud_investigation_demo.py passes a task_type on every
+# guarded call matching that source's task_bindings. `permitted_agent_ids` on
+# transaction_analyst_policy is satisfied by passing a matching agent_id explicitly.
+industry: financial_services
+organization: Fraud_Financial_Crime
+division: Fraud & Financial Crime
+process_group: fraud_investigation
+
+regulations:
+  - id: BSA-AML
+    name: "Bank Secrecy Act — Anti-Money Laundering (31 CFR Part 1020)"
+    applicable_rules:
+      - rule: "31 CFR 1020.320 — Suspicious Activity Report (SAR) filing"
+        how_enforced: "sar_generator_policy task_bindings restrict sar_draft to agent_outputs, case_metadata, regulatory_templates — no raw data access; all raw-data roles have require_task_for_sensitivity: high"
+      - rule: "Role isolation — transaction analysis segregated from identity review"
+        how_enforced: "transaction_analyst_policy denied_sources blocks identity_data, kyc_records, sanctions_list; kyc_specialist_policy denied_sources blocks transaction_history — enforced by policy engine at retrieval time"
+  - id: FINCEN-CDD
+    name: "FinCEN Customer Due Diligence Rule (31 CFR 1010.230)"
+    applicable_rules:
+      - rule: "Beneficial ownership and identity verification for high-risk accounts"
+        how_enforced: "kyc_specialist_policy task_bindings bind identity_check to identity_data and kyc_records; pep_check bound to pep_registry only; session_ttl: 60 minutes limits PHI exposure window"
+  - id: OFAC
+    name: "OFAC Sanctions Screening Requirements"
+    applicable_rules:
+      - rule: "Sanctions list access restricted to identity verification tasks only"
+        how_enforced: "kyc_specialist_policy task_bindings bind sanctions_screening to sanctions_list only; sanctions_list denied to transaction_analyst, account_profiler, and sar_generator roles"
+  - id: USA-PATRIOT
+    name: "USA PATRIOT Act — Section 326 Customer Identification Program"
+    applicable_rules:
+      - rule: "Identity verification restricted to approved production agents"
+        how_enforced: "kyc_specialist_policy permitted_agent_ids enforces named-agent-only access to identity_data and kyc_records; anonymous calls denied; require_task_for_sensitivity: high"
+  - id: FINRA-4511
+    name: "FINRA Rules 4511/4512 — Books and Records"
+    applicable_rules:
+      - rule: "Tamper-evident records of all investigation decisions and data access events"
+        how_enforced: "cryptographic audit chain on every ALLOW/DENY event; session_ttl_minutes limits data exposure window; sensitivity_decay enforces time-bound access reduction on all high-sensitivity roles"
+
+policies:
+
+  # Fraud orchestrator — routes alerts and coordinates sub-agents; no raw data access
+  - name: fraud_orchestrator_policy
+    description: "Routes fraud alerts and coordinates sub-agents; orchestration only, no raw data access"
+    agent_role: fraud_orchestrator
+    allowed_sources:
+      - fraud_alerts
+      - case_metadata
+      - agent_outputs
+    denied_sources:
+      - transaction_history
+      - transaction_patterns
+      - account_pii
+      - account_summaries
+      - identity_data
+      - kyc_records
+      - sanctions_list
+      - adverse_media
+      - merchant_codes
+      - amount_thresholds
+    allowed_tasks:
+      - route_investigation
+      - escalate_case
+      - close_case
+      - assign_subagent
+    denied_tasks:
+      - pattern_analysis
+      - identity_check
+      - sar_draft
+      - account_risk_assessment
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: route_investigation
+        permitted_sources: [fraud_alerts, case_metadata]
+      - task: escalate_case
+        permitted_sources: [case_metadata]
+      - task: close_case
+        permitted_sources: [case_metadata, agent_outputs]
+      - task: assign_subagent
+        permitted_sources: [case_metadata]
+    session_ttl_minutes: 480
+
+  # Transaction analyst — payment patterns and velocity; no identity or account PII
+  # permitted_agent_ids: locks this high-sensitivity role to approved production agents only.
+  # Any agent_id not matching the pattern is denied; calls that omit agent_id are also denied.
+  # To allow any approved agent, remove permitted_agent_ids entirely.
+  - name: transaction_analyst_policy
+    description: "Payment patterns and velocity analysis; no identity or account PII access"
+    agent_role: transaction_analyst
+    permitted_agent_ids:
+      - fraud-analyst-prod          # exact match — production instance
+      - fraud-analyst-*             # wildcard — matches fraud-analyst-v2, fraud-analyst-canary, etc.
+    allowed_sources:
+      - transaction_history
+      - transaction_patterns
+      - amount_thresholds
+      - merchant_codes
+      - velocity_signals
+    denied_sources:
+      - account_pii
+      - identity_data
+      - kyc_records
+      - sanctions_list
+      - adverse_media
+      - account_summaries
+    allowed_tasks:
+      - pattern_analysis
+      - structuring_detection
+      - velocity_check
+      - merchant_risk_scoring
+    denied_tasks:
+      - identity_check
+      - sanctions_screening
+      - sar_draft
+      - account_freeze
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: pattern_analysis
+        permitted_sources: [transaction_history, transaction_patterns, velocity_signals]
+      - task: structuring_detection
+        permitted_sources: [transaction_history, amount_thresholds]
+      - task: velocity_check
+        permitted_sources: [velocity_signals, transaction_patterns]
+      - task: merchant_risk_scoring
+        permitted_sources: [merchant_codes, transaction_patterns]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: high
+      - after_minutes: 45
+        max_sensitivity: medium
+
+  # Account profiler — account-level risk signals; no transaction detail or identity data
+  - name: account_profiler_policy
+    description: "Account-level risk signals and tenure analysis; no transaction detail or identity data"
+    agent_role: account_profiler
+    allowed_sources:
+      - account_summaries
+      - account_flags
+      - risk_scores
+      - product_holdings
+      - account_tenure
+    denied_sources:
+      - transaction_history
+      - transaction_patterns
+      - identity_data
+      - kyc_records
+      - sanctions_list
+      - account_pii
+    allowed_tasks:
+      - account_risk_assessment
+      - flag_review
+      - tenure_analysis
+      - product_exposure_check
+    denied_tasks:
+      - pattern_analysis
+      - identity_check
+      - sar_draft
+      - account_freeze
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: account_risk_assessment
+        permitted_sources: [account_summaries, risk_scores, account_flags]
+      - task: flag_review
+        permitted_sources: [account_flags, account_summaries]
+      - task: tenure_analysis
+        permitted_sources: [account_tenure, account_summaries]
+      - task: product_exposure_check
+        permitted_sources: [product_holdings, account_summaries]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: high
+      - after_minutes: 45
+        max_sensitivity: medium
+
+  # KYC specialist — identity verification and watchlist screening; no transaction data
+  - name: kyc_specialist_policy
+    description: "Identity verification and watchlist screening; no transaction or account data access"
+    agent_role: kyc_specialist
+    allowed_sources:
+      - identity_data
+      - kyc_records
+      - sanctions_list
+      - adverse_media
+      - pep_registry
+    denied_sources:
+      - transaction_history
+      - transaction_patterns
+      - account_summaries
+      - account_flags
+      - risk_scores
+      - merchant_codes
+    allowed_tasks:
+      - identity_check
+      - sanctions_screening
+      - kyc_refresh
+      - pep_check
+      - adverse_media_review
+    denied_tasks:
+      - pattern_analysis
+      - velocity_check
+      - sar_draft
+      - account_freeze
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: identity_check
+        permitted_sources: [identity_data, kyc_records]
+      - task: sanctions_screening
+        permitted_sources: [sanctions_list]
+      - task: kyc_refresh
+        permitted_sources: [kyc_records, identity_data]
+      - task: pep_check
+        permitted_sources: [pep_registry]
+      - task: adverse_media_review
+        permitted_sources: [adverse_media]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: high
+      - after_minutes: 45
+        max_sensitivity: medium
+
+  # SAR generator — reads processed agent outputs only; denied all raw data sources
+  - name: sar_generator_policy
+    description: "Generates reports from processed agent outputs only; no raw data source access"
+    agent_role: sar_generator
+    allowed_sources:
+      - agent_outputs
+      - case_metadata
+      - regulatory_templates
+    denied_sources:
+      - transaction_history
+      - transaction_patterns
+      - account_pii
+      - account_summaries
+      - identity_data
+      - kyc_records
+      - sanctions_list
+      - adverse_media
+      - merchant_codes
+      - amount_thresholds
+      - risk_scores
+      - account_flags
+      - velocity_signals
+    allowed_tasks:
+      - sar_draft
+      - sar_review
+      - case_summary
+      - regulatory_narrative
+    denied_tasks:
+      - pattern_analysis
+      - identity_check
+      - account_risk_assessment
+      - account_freeze
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: sar_draft
+        permitted_sources: [agent_outputs, case_metadata, regulatory_templates]
+      - task: sar_review
+        permitted_sources: [agent_outputs, case_metadata]
+      - task: case_summary
+        permitted_sources: [agent_outputs, case_metadata]
+      - task: regulatory_narrative
+        permitted_sources: [agent_outputs, regulatory_templates]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: high
+      - after_minutes: 45
+        max_sensitivity: medium
