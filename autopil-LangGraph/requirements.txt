@@ -2,4 +2,6 @@ langgraph
 langgraph-cli[inmem]
 langchain-anthropic
 langchain-google-genai
+langchain-groq
+langchain-ollama
 python-dotenv

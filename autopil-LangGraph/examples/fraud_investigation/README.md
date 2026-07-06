@@ -31,13 +31,15 @@ python3.11 -m venv .venv
 cp .env.example .env
 ```
 
-You need **one** of these two keys in `.env` (both is fine too — see "Choosing a model"
-below):
+You need **one** of these four set up (having several is fine too — see "Choosing a
+model" below):
 
 | Provider | Env var | Cost |
 |---|---|---|
 | Google Gemini | `GOOGLE_API_KEY` | Free — get a key at https://aistudio.google.com/apikey |
 | Anthropic Claude | `ANTHROPIC_API_KEY` | Paid — requires Anthropic API credits |
+| Groq | `GROQ_API_KEY` | Free — get a key at https://console.groq.com/keys |
+| Ollama | *(none — local)* | Free — needs `ollama serve` running and a model pulled |
 
 No manual agent registration step needed — `agent_id` is mandatory on every guarded call
 as of autopil `main`@`485ccb7`, so the demo registers all 5 roles as `status="approved"`
@@ -85,10 +87,11 @@ npm run dev
 
 Open the printed Vite URL (`http://localhost:5173`). Then:
 
-1. **Pick a model** from the dropdown — Gemini is the default (free); switch to Claude
-   if you'd rather use Anthropic credits. Whichever you pick must have its key set in
-   `.env` on the server side, or the run fails immediately with a clear error banner
-   (e.g. `GOOGLE_API_KEY not set`) instead of hanging.
+1. **Pick a model** from the dropdown — Ollama (local) is the default; Gemini, Claude,
+   and Groq are the other options. Whichever you pick must be configured server-side
+   (API key in `.env`, or `ollama serve` running with the model pulled), or the run
+   fails immediately with a clear error banner instead of hanging — see "Choosing a
+   model" below.
 2. **Pick a case** (CASE-001/002/003) to start a run.
 3. **Watch the feed** populate live: green rows for allowed tool calls, red for denied
    (with the AutoPIL denial reason inline), plus routing decisions and specialist
@@ -107,12 +110,33 @@ so the CLI and the live viewer are always showing the same underlying run.
 ### Choosing a model
 
 Both the CLI and the live viewer go through one `_make_llm(provider)` function. The CLI
-always calls it with `provider=""` (auto: Anthropic if configured, else Gemini) — no UI
-to pick from. The live viewer's dropdown sets `provider` explicitly per run
-(`"anthropic"` or `"gemini"`), threaded through `InvestigationState["provider"]` to every
-node that calls the LLM. Both providers accept the exact same tool-schema dicts and
-`tool_choice="<name>"` convention used throughout this file, so nothing else changes
-between them.
+always calls it with `provider=""` — auto-picks the first of Anthropic, Gemini, Groq,
+then Ollama that's configured, in that order (Ollama last since it needs no key, just a
+local server, so it's the fallback of last resort). The live viewer's dropdown sets
+`provider` explicitly per run (`"anthropic"`, `"gemini"`, `"groq"`, or `"ollama"`),
+threaded through `InvestigationState["provider"]` to every node that calls the LLM.
+
+All four accept the same tool-schema dicts used throughout this file — with one caveat:
+**Ollama's `bind_tools()` documents that `tool_choice` is ignored**, so it can't be forced
+to call a specific tool the way `orchestrator_node`'s routing decision and
+`orchestrator_review_node`'s re-routing decision expect. Both nodes check
+`if response.tool_calls` before indexing into it and fall back to a sane default
+(route to all specialists; stop routing and move to `sar_generator`) if the model didn't
+call the tool at all — otherwise a local model skipping the tool call would crash the run
+instead of just degrading.
+
+**Ollama quality is model-dependent — tested, not guessed.** The default is
+`qwen2.5:7b` (`ollama pull qwen2.5:7b`), verified live to gather data properly: all
+3 specialists made real tool calls, including 3 legitimate AutoPIL denials on over-scope
+reaches. The smaller `llama3.2` (3B) was tried first and failed this same test —
+2 of 3 specialists skipped tool calls entirely and jumped straight to a finding with no
+data gathered, which defeats the point of the demo (AutoPIL has nothing to enforce if the
+model never asks for data). If `qwen2.5:7b` still isn't reliable enough on your machine,
+try `llama3.1:8b` or a larger `qwen2.5` variant via `OLLAMA_MODEL` in `.env`. Anthropic
+and Gemini did not show this problem in testing.
+
+The live viewer's dropdown defaults to Ollama (it's the one that can't rate-limit or
+503 on you — see below), followed by Gemini, Claude, then Groq.
 
 ### Human-in-the-loop review
 

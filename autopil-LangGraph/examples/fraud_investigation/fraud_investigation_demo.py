@@ -29,6 +29,8 @@ sys.path.insert(0, str(ROOT))
 
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
+from langchain_ollama import ChatOllama
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -87,16 +89,25 @@ guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenan
 
 
 def _make_llm(provider: str = ""):
-    """Build the LLM for a run. provider is "anthropic", "gemini", or "" (auto: Anthropic
-    if configured, else Gemini) — the live viewer's model dropdown sets this explicitly
+    """Build the LLM for a run. provider is "anthropic", "gemini", "groq", "ollama", or
+    "" (auto: first of the four with credentials configured, Ollama last since it needs
+    no key — just a local server) — the live viewer's model dropdown sets this explicitly
     per run via InvestigationState["provider"]; the CLI leaves it on auto.
 
-    Both providers accept the same tool-schema dicts and tool_choice="<name>" convention
-    used throughout this file, so nothing else needs to change when switching providers.
-    A key at https://aistudio.google.com/apikey is free, for Gemini.
+    All four accept the same tool-schema dicts used throughout this file. Ollama is the
+    one exception on tool_choice: its bind_tools() documents that tool_choice is ignored
+    (it can't force a specific tool call), which is why orchestrator_node and
+    orchestrator_review_node below check `if response.tool_calls` before indexing —
+    without that guard, a local model that responds with no tool call at all would crash
+    the run instead of just falling back to a default routing decision.
     """
     if not provider:
-        provider = "anthropic" if os.getenv("ANTHROPIC_API_KEY") else "gemini"
+        provider = (
+            "anthropic" if os.getenv("ANTHROPIC_API_KEY")
+            else "gemini" if os.getenv("GOOGLE_API_KEY")
+            else "groq" if os.getenv("GROQ_API_KEY")
+            else "ollama"
+        )
     if provider == "anthropic":
         if not os.getenv("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY not set (see .env.example)")
@@ -105,6 +116,16 @@ def _make_llm(provider: str = ""):
         if not os.getenv("GOOGLE_API_KEY"):
             raise RuntimeError("GOOGLE_API_KEY not set (see .env.example)")
         return ChatGoogleGenerativeAI(model="gemini-3.5-flash", api_key=os.getenv("GOOGLE_API_KEY"))
+    if provider == "groq":
+        if not os.getenv("GROQ_API_KEY"):
+            raise RuntimeError("GROQ_API_KEY not set (see .env.example)")
+        return ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
+    if provider == "ollama":
+        # No key needed — just `ollama serve` running locally with OLLAMA_MODEL pulled
+        # (default: qwen2.5:7b — `ollama pull qwen2.5:7b`; verified live to actually use
+        # tools reliably. llama3.2's 3B default was tested first and skipped tool calls
+        # entirely for 2 of 3 specialists — don't regress to it as the default).
+        return ChatOllama(model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"))
     raise ValueError(f"Unknown provider: {provider!r}")
 
 
@@ -507,7 +528,9 @@ def orchestrator_node(state: InvestigationState) -> dict:
     )
     response = bound.invoke([SystemMessage(content="You are a fraud investigation orchestrator routing a case to specialist agents."),
                               HumanMessage(content=prompt)])
-    route = response.tool_calls[0]["args"].get("route", list(SPECIALIST_ROLES))
+    # tool_choice isn't honored by every provider (Ollama ignores it outright) — fall
+    # back to the full specialist list if the model didn't call set_route at all.
+    route = response.tool_calls[0]["args"].get("route", list(SPECIALIST_ROLES)) if response.tool_calls else list(SPECIALIST_ROLES)
     print(f"  → initial route plan: {route}")
     _emit({"type": "routing", "stage": "initial", "route": route})
 
@@ -589,7 +612,9 @@ def orchestrator_review_node(state: InvestigationState) -> dict:
     )
     response = bound.invoke([SystemMessage(content="You are a fraud investigation orchestrator."),
                               HumanMessage(content=prompt)])
-    decision = response.tool_calls[0]["args"]
+    # Same tool_choice caveat as orchestrator_node — default to ending the loop if the
+    # model didn't call decide_next at all.
+    decision = response.tool_calls[0]["args"] if response.tool_calls else {}
     nxt = decision.get("next", "sar_generator")
     print(f"\n  [orchestrator review]  next -> {nxt}  ({decision.get('reason','')})")
     _emit({"type": "routing", "stage": "review", "next": nxt, "reason": decision.get("reason", "")})

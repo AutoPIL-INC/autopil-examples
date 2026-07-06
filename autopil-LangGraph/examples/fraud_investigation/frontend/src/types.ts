@@ -101,11 +101,34 @@ export const OVERRIDE_ACTIONS = [
 
 export const CASE_IDS = ["CASE-001", "CASE-002", "CASE-003"] as const;
 
+// See simulated_data.py's module docstring for the underlying fixture data.
+export const CASE_INFO: Record<(typeof CASE_IDS)[number], { title: string; description: string; estimatedTime: string }> = {
+  "CASE-001": {
+    title: "Structuring",
+    description: "Deposits kept just under the $10,000 CTR reporting threshold, followed by an outbound wire.",
+    estimatedTime: "~1–2 min",
+  },
+  "CASE-002": {
+    title: "Account takeover",
+    description: "Sudden transaction velocity spike from a new device, with a geographic anomaly.",
+    estimatedTime: "~1–2 min",
+  },
+  "CASE-003": {
+    title: "Synthetic identity",
+    description: "A new, thin-file account jumps straight to high-value activity with no prior history.",
+    estimatedTime: "~1–2 min",
+  },
+};
+
 // Must match _make_llm()'s provider strings in fraud_investigation_demo.py.
-// Gemini listed first (and used as the default selection) since it's free.
+// Ollama listed first (and used as the default selection) — fully local, no key,
+// no external API to rate-limit or 503 on you. See README's "Choosing a model" for
+// the tradeoff: reliability depends on which local model you've pulled.
 export const PROVIDERS = [
+  { value: "ollama", label: "Ollama (local, free)" },
   { value: "gemini", label: "Gemini (Google, free tier)" },
   { value: "anthropic", label: "Claude (Anthropic)" },
+  { value: "groq", label: "Groq (Llama, free tier)" },
 ] as const;
 
 export function initialInput(caseId: string, provider: string): InvestigationState {

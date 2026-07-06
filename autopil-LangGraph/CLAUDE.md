@@ -25,15 +25,28 @@ as a whole.
   needs an unreleased fix.
 - `ANTHROPIC_API_KEY` (and friends) live in `.env`, which is gitignored — never commit
   it. `.env.example` documents the required keys.
-- Both scripts pick a model via a `_make_llm()` helper: `ChatAnthropic` if
-  `ANTHROPIC_API_KEY` is set, otherwise `ChatGoogleGenerativeAI` (`gemini-3.5-flash`) if
-  `GOOGLE_API_KEY` is set — free at https://aistudio.google.com/apikey, no Anthropic
-  credits needed. Both providers accept the same tool-schema dicts and
-  `tool_choice="<name>"` convention used throughout, so no other code needs to change
-  when switching providers. In the fraud demo, `_make_llm(provider)` also takes an
-  explicit `"anthropic"`/`"gemini"` override, threaded through
+- Both scripts pick a model via a `_make_llm()` helper. The fraud demo's version tries,
+  in order: `ChatAnthropic` (`ANTHROPIC_API_KEY`) → `ChatGoogleGenerativeAI`
+  (`GOOGLE_API_KEY`, `gemini-3.5-flash`) → `ChatGroq` (`GROQ_API_KEY`,
+  `llama-3.3-70b-versatile`) → `ChatOllama` (no key, local server, `OLLAMA_MODEL` or
+  `qwen2.5:7b` default). All four accept the same tool-schema dicts, so no other code
+  needs to change when switching providers — **except** `tool_choice`: Ollama's
+  `bind_tools()` documents that it's ignored, so `orchestrator_node` and
+  `orchestrator_review_node` guard every `response.tool_calls[0]` index with
+  `if response.tool_calls` and fall back to a default routing decision instead of
+  crashing when a model (Ollama, in practice) doesn't call the forced tool.
+  `_make_llm(provider)` also takes an explicit override, threaded through
   `InvestigationState["provider"]` — that's what the live viewer's model dropdown sets
-  per run. `01_basics.py`'s `_make_llm()` has no such override; it's always auto-detect.
+  per run (defaults to `"ollama"` there — see `frontend/src/types.ts`'s `PROVIDERS`).
+  `01_basics.py`'s `_make_llm()` is simpler (Anthropic/Gemini only, no override, always
+  auto-detect) since it has no dropdown to serve.
+- **Ollama's default model matters a lot, and it's been live-tested both ways** —
+  `llama3.2` (3B), tried first, completes without crashing but 2 of 3 specialists skipped
+  tool calls entirely and jumped straight to a finding with no data gathered. Swapped the
+  default to `qwen2.5:7b`, which passed the same live test cleanly (all 3 specialists
+  called tools, 3 legitimate AutoPIL denials fired). Don't reintroduce `llama3.2` as the
+  default without re-verifying — "runs to completion" is not the same as "worked well"
+  for this provider.
 
 ## Working with the fraud investigation demo
 
