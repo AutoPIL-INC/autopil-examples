@@ -178,6 +178,14 @@ No scenario is scripted to fail or succeed. The prompts should be written to mak
 boundary-crossing attempt *plausible* (e.g., CASE-002's brief mentions "verify identity"
 without saying which agent owns that) without instructing the model to attempt it.
 
+**Later addition:** two more cases were added on top of the original three — CASE-004
+(elder financial exploitation: a brand-new authorized signer diverts funds from a
+25-year account) and CASE-005 (money mule / check kiting: third-party checks withdrawn
+before hold periods release). Both reuse the exact same mechanism as CASE-001/002 —
+a new flag in `SOURCES["velocity_signals"]` and a new `elif` branch in `decision_node`
+— no new AutoPIL source types or tool plumbing were needed. See `simulated_data.py`'s
+module docstring for the full account/transaction/KYC data.
+
 ## 10. Open questions before implementation
 
 1. **Cost/latency** — each specialist is now a multi-turn tool-calling loop instead of

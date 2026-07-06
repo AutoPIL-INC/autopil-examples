@@ -149,8 +149,8 @@ _reset_sessions()
 SOURCES = {
     "fraud_alerts": {a["case_id"]: a for a in data.FRAUD_ALERTS},
     "case_metadata": {
-        cid: {"case_id": cid, "status": "open", "assigned_to": None}
-        for cid in ["CASE-001", "CASE-002", "CASE-003"]
+        a["case_id"]: {"case_id": a["case_id"], "status": "open", "assigned_to": None}
+        for a in data.FRAUD_ALERTS
     },
     "agent_outputs": data.AGENT_OUTPUTS,
     "regulatory_templates": {
@@ -169,11 +169,17 @@ SOURCES = {
                      "impossible_travel": True, "velocity_multiplier": 42.4},
         "ACC_5590": {"purchases_30d": 6, "purchase_total_30d": 25100, "nsf_flag": True,
                      "bust_out_score": 0.91, "days_since_opened": 38},
+        "ACC_6634": {"transfers_11d": 5, "transfer_total_11d": 34500, "new_payee_flag": True,
+                     "elder_abuse_flag": True, "days_since_signer_added": 11},
+        "ACC_7743": {"check_deposits_7d": 5, "check_total_7d": 42000, "distinct_remitters": 5,
+                     "mule_pattern_flag": True, "check_kiting_score": 0.89},
     },
     "merchant_codes": {
         "ACC_8821": {"primary_channel": "branch/ATM cash", "merchant_types": []},
         "ACC_3347": {"primary_channel": "card/online", "merchant_types": ["electronics", "luxury", "jewelry"]},
         "ACC_5590": {"primary_channel": "card", "merchant_types": ["electronics", "bulk_retail"]},
+        "ACC_6634": {"primary_channel": "online_transfer", "merchant_types": []},
+        "ACC_7743": {"primary_channel": "check/atm", "merchant_types": []},
     },
     "amount_thresholds": {
         "ctr_threshold": 10000, "sar_trigger_amount": 5000, "structuring_window_days": 14,
@@ -658,6 +664,10 @@ def decision_node(state: InvestigationState) -> dict:
         proposed_action = "SAR REQUIRED — structuring pattern confirmed"
     elif velocity.get("impossible_travel"):
         proposed_action = "FREEZE PENDING CONTACT — account takeover indicators"
+    elif velocity.get("elder_abuse_flag"):
+        proposed_action = "SAR REQUIRED — elder financial exploitation confirmed"
+    elif velocity.get("mule_pattern_flag"):
+        proposed_action = "FREEZE PENDING CONTACT — suspected money mule activity"
     else:
         proposed_action = "MONITOR — no immediate action required"
 
@@ -679,8 +689,8 @@ def decision_node(state: InvestigationState) -> dict:
         print(f"  Reviewer: APPROVED")
     else:
         print(f"  Reviewer: OVERRODE -> {action}")
-        if human_decision.get("notes"):
-            print(f"            {human_decision['notes']}")
+    if human_decision.get("notes"):
+        print(f"            {human_decision['notes']}")
     print(f"  Final: {action}")
     print(f"  SAR warranted (expected): {'Yes' if expected.get('expected_sar') else 'No'}")
     print(f"  Specialists run: {state['specialists_run']}")
@@ -813,5 +823,5 @@ def run_case(case_id: str) -> None:
 
 
 if __name__ == "__main__":
-    for case_id in ["CASE-001", "CASE-002", "CASE-003"]:
+    for case_id in ["CASE-001", "CASE-002", "CASE-003", "CASE-004", "CASE-005"]:
         run_case(case_id)

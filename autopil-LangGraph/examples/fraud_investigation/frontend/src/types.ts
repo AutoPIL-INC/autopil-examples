@@ -96,10 +96,12 @@ export const OVERRIDE_ACTIONS = [
   "SAR REQUIRED — synthetic identity bust-out confirmed",
   "SAR REQUIRED — structuring pattern confirmed",
   "FREEZE PENDING CONTACT — account takeover indicators",
+  "SAR REQUIRED — elder financial exploitation confirmed",
+  "FREEZE PENDING CONTACT — suspected money mule activity",
   "MONITOR — no immediate action required",
 ] as const;
 
-export const CASE_IDS = ["CASE-001", "CASE-002", "CASE-003"] as const;
+export const CASE_IDS = ["CASE-001", "CASE-002", "CASE-003", "CASE-004", "CASE-005"] as const;
 
 // See simulated_data.py's module docstring for the underlying fixture data.
 export const CASE_INFO: Record<(typeof CASE_IDS)[number], { title: string; description: string; estimatedTime: string }> = {
@@ -116,6 +118,16 @@ export const CASE_INFO: Record<(typeof CASE_IDS)[number], { title: string; descr
   "CASE-003": {
     title: "Synthetic identity",
     description: "A new, thin-file account jumps straight to high-value activity with no prior history.",
+    estimatedTime: "~1–2 min",
+  },
+  "CASE-004": {
+    title: "Elder financial exploitation",
+    description: "A brand-new authorized signer on a 25-year account diverts funds to their own account.",
+    estimatedTime: "~1–2 min",
+  },
+  "CASE-005": {
+    title: "Money mule / check kiting",
+    description: "Third-party checks from unrelated remitters, each withdrawn before the hold would release.",
     estimatedTime: "~1–2 min",
   },
 };

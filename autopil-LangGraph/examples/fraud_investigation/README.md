@@ -52,8 +52,9 @@ on import, idempotently, before the graph runs.
 .venv/bin/python examples/fraud_investigation/fraud_investigation_demo.py
 ```
 
-Runs all three cases (CASE-001 structuring, CASE-002 account takeover, CASE-003
-synthetic identity) back to back, unattended. Model selection is automatic here —
+Runs all five cases (CASE-001 structuring, CASE-002 account takeover, CASE-003 synthetic
+identity, CASE-004 elder financial exploitation, CASE-005 money mule / check kiting) back
+to back, unattended. Model selection is automatic here —
 Anthropic if `ANTHROPIC_API_KEY` is set, otherwise Gemini — see "Choosing a model"
 below for how the live viewer differs. Each case prints:
 
@@ -85,14 +86,23 @@ npm install
 npm run dev
 ```
 
-Open the printed Vite URL (`http://localhost:5173`). Then:
+Open the printed Vite URL (`http://localhost:5173`). There are two tabs:
+
+**Description** (opens by default) — what the demo is, a visual flow diagram of the 5
+agents (orchestrator → 3 specialists → SAR generator → human review → disposition), each
+agent's actual AutoPIL policy (allowed/denied sources, max sensitivity, session TTL —
+mirrored from `policies/financial_services/fraud_investigation.yaml`, not invented for
+display), the regulations it maps to, and a summary of all 5 cases. Read-only reference,
+no live connection to the server.
+
+**Execution** — the live run:
 
 1. **Pick a model** from the dropdown — Ollama (local) is the default; Gemini, Claude,
    and Groq are the other options. Whichever you pick must be configured server-side
    (API key in `.env`, or `ollama serve` running with the model pulled), or the run
    fails immediately with a clear error banner instead of hanging — see "Choosing a
    model" below.
-2. **Pick a case** (CASE-001/002/003) to start a run.
+2. **Pick a case** (CASE-001 through CASE-005) to start a run.
 3. **Watch the feed** populate live: green rows for allowed tool calls, red for denied
    (with the AutoPIL denial reason inline), plus routing decisions and specialist
    findings as they stream in.
@@ -202,7 +212,7 @@ to load a graph pre-compiled with one — so the module-level `graph` has none, 
 | File | What it is |
 |---|---|
 | `DESIGN.md` | Design rationale — why this demo exists, what's different from AutoPIL's original scripted version, open questions |
-| `simulated_data.py` | Fixture data, reused as-is from `autopil/examples/fraud_investigation` — 5 accounts, 50 transactions, 3 fraud alerts, KYC records |
+| `simulated_data.py` | Fixture data — 7 accounts, 72 transactions, 5 fraud alerts, KYC records. CASE-001/002/003 and their 5 accounts are reused as-is from `autopil/examples/fraud_investigation`; CASE-004 (elder financial exploitation) and CASE-005 (money mule / check kiting) were added later, original to this repo |
 | `policies/financial_services/fraud_investigation.yaml` | Otherwise-unmodified copy of the original policy — see the file header for a fix that had to land upstream in `autopil` (`task_type` support on `protect()`) before `require_task_for_sensitivity` could work through the SDK path |
 | `fraud_investigation_demo.py` | The demo itself |
 | `../../langgraph.json` | Exposes `fraud_investigation_demo.py:graph` to `langgraph dev` for the live viewer |

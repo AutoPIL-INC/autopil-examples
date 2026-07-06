@@ -1,10 +1,12 @@
 """
 Simulated data for the AutoPIL Fraud Investigation demo.
 
-Three fraud cases with distinct patterns:
+Five fraud cases with distinct patterns:
   - CASE-001: Structuring (currency transactions just under $10,000 reporting threshold)
   - CASE-002: Account takeover (velocity spike + new device + geo anomaly)
   - CASE-003: Synthetic identity (new account, thin file, rapid high-value activity)
+  - CASE-004: Elder financial exploitation (new authorized signer + fund diversion)
+  - CASE-005: Money mule / check kiting (third-party checks withdrawn before hold release)
 
 Each case includes:
   - A fraud alert (trigger for the orchestrator)
@@ -55,6 +57,30 @@ ACCOUNTS = {
         "prior_sar_count": 0,
         "account_flags": ["new_account", "thin_file", "rapid_escalation"],
         "risk_score": 92,                      # high risk
+        "product_holdings": ["checking"],
+    },
+    "ACC_6634": {
+        "account_id": "ACC_6634",
+        "holder_name": "Eleanor J. Whitfield",
+        "account_type": "checking",
+        "opened_date": "2001-05-10",           # 25-year customer
+        "tenure_days": 9089,
+        "average_monthly_balance": 6200,
+        "prior_sar_count": 0,
+        "account_flags": ["elder_customer", "new_authorized_signer"],
+        "risk_score": 68,
+        "product_holdings": ["checking", "savings"],
+    },
+    "ACC_7743": {
+        "account_id": "ACC_7743",
+        "holder_name": "Jamal K. Reyes",
+        "account_type": "checking",
+        "opened_date": "2025-10-02",            # ~6 months — plausible recruited-mule profile
+        "tenure_days": 178,
+        "average_monthly_balance": 1100,
+        "prior_sar_count": 0,
+        "account_flags": ["short_tenure", "third_party_deposits"],
+        "risk_score": 81,
         "product_holdings": ["checking"],
     },
     # Clean baseline accounts (no active alerts)
@@ -173,6 +199,76 @@ TRANSACTIONS = [
      "amount": 0,    "merchant": None,             "channel": "system", "city": None,        "state": None,
      "flag": "insufficient_funds"},
 
+    # ── CASE-004: ACC_6634 — Elder financial exploitation ──────────────────────
+    # 25-year low-activity retirement account. New authorized signer added 2026-03-17 —
+    # escalating transfers to that signer's personal account follow within days.
+
+    {"txn_id": "T051", "account_id": "ACC_6634", "date": "2026-02-02", "type": "ss_deposit",
+     "amount": 2100,  "merchant": "SSA Direct Deposit", "channel": "ach",  "city": "Plano", "state": "TX"},
+    {"txn_id": "T052", "account_id": "ACC_6634", "date": "2026-02-05", "type": "purchase",
+     "amount": -85,   "merchant": "CVS",                "channel": "card", "city": "Plano", "state": "TX"},
+    {"txn_id": "T053", "account_id": "ACC_6634", "date": "2026-02-10", "type": "bill_payment",
+     "amount": -210,  "merchant": "Oncor Electric",     "channel": "ach",  "city": "Plano", "state": "TX"},
+    {"txn_id": "T054", "account_id": "ACC_6634", "date": "2026-03-02", "type": "ss_deposit",
+     "amount": 2100,  "merchant": "SSA Direct Deposit", "channel": "ach",  "city": "Plano", "state": "TX"},
+    {"txn_id": "T055", "account_id": "ACC_6634", "date": "2026-03-08", "type": "purchase",
+     "amount": -64,   "merchant": "Kroger",             "channel": "card", "city": "Plano", "state": "TX"},
+    # New authorized signer added 2026-03-17 — transfers to their personal account begin days later
+    {"txn_id": "T056", "account_id": "ACC_6634", "date": "2026-03-20", "type": "transfer",
+     "amount": -4200, "merchant": "K. Whitfield Personal", "channel": "online", "city": "Plano", "state": "TX",
+     "new_payee": True},
+    {"txn_id": "T057", "account_id": "ACC_6634", "date": "2026-03-22", "type": "transfer",
+     "amount": -6500, "merchant": "K. Whitfield Personal", "channel": "online", "city": "Plano", "state": "TX",
+     "new_payee": True},
+    {"txn_id": "T058", "account_id": "ACC_6634", "date": "2026-03-24", "type": "transfer",
+     "amount": -7800, "merchant": "K. Whitfield Personal", "channel": "online", "city": "Plano", "state": "TX",
+     "new_payee": True},
+    {"txn_id": "T059", "account_id": "ACC_6634", "date": "2026-03-26", "type": "transfer",
+     "amount": -8900, "merchant": "K. Whitfield Personal", "channel": "online", "city": "Plano", "state": "TX",
+     "new_payee": True},
+    {"txn_id": "T060", "account_id": "ACC_6634", "date": "2026-03-28", "type": "transfer",
+     "amount": -7100, "merchant": "K. Whitfield Personal", "channel": "online", "city": "Plano", "state": "TX",
+     "new_payee": True},
+
+    # ── CASE-005: ACC_7743 — Money mule / check kiting ──────────────────────────
+    # Recently opened account. Five third-party check deposits from unrelated remitters,
+    # each withdrawn same-day — before standard hold periods would release the funds.
+
+    {"txn_id": "T061", "account_id": "ACC_7743", "date": "2025-10-15", "type": "purchase",
+     "amount": -45,   "merchant": "7-Eleven",           "channel": "card", "city": "San Antonio", "state": "TX"},
+    {"txn_id": "T062", "account_id": "ACC_7743", "date": "2025-12-01", "type": "payroll_deposit",
+     "amount": 1400,  "merchant": "Gig Economy Payroll","channel": "ach", "city": "San Antonio", "state": "TX"},
+    {"txn_id": "T063", "account_id": "ACC_7743", "date": "2026-03-20", "type": "check_deposit",
+     "amount": 8200,  "merchant": None, "channel": "mobile", "city": "San Antonio", "state": "TX",
+     "remitter": "Unknown Payer 1"},
+    {"txn_id": "T064", "account_id": "ACC_7743", "date": "2026-03-20", "type": "atm_withdrawal",
+     "amount": -7500, "merchant": None, "channel": "atm",    "city": "San Antonio", "state": "TX",
+     "before_hold_release": True},
+    {"txn_id": "T065", "account_id": "ACC_7743", "date": "2026-03-22", "type": "check_deposit",
+     "amount": 9100,  "merchant": None, "channel": "mobile", "city": "San Antonio", "state": "TX",
+     "remitter": "Unknown Payer 2"},
+    {"txn_id": "T066", "account_id": "ACC_7743", "date": "2026-03-22", "type": "wire_transfer",
+     "amount": -8600, "merchant": None, "channel": "online", "city": "San Antonio", "state": "TX",
+     "before_hold_release": True},
+    {"txn_id": "T067", "account_id": "ACC_7743", "date": "2026-03-24", "type": "check_deposit",
+     "amount": 7800,  "merchant": None, "channel": "mobile", "city": "San Antonio", "state": "TX",
+     "remitter": "Unknown Payer 3"},
+    {"txn_id": "T068", "account_id": "ACC_7743", "date": "2026-03-24", "type": "atm_withdrawal",
+     "amount": -7200, "merchant": None, "channel": "atm",    "city": "San Antonio", "state": "TX",
+     "before_hold_release": True},
+    {"txn_id": "T069", "account_id": "ACC_7743", "date": "2026-03-26", "type": "check_deposit",
+     "amount": 8900,  "merchant": None, "channel": "mobile", "city": "San Antonio", "state": "TX",
+     "remitter": "Unknown Payer 4"},
+    {"txn_id": "T070", "account_id": "ACC_7743", "date": "2026-03-26", "type": "wire_transfer",
+     "amount": -8300, "merchant": None, "channel": "online", "city": "San Antonio", "state": "TX",
+     "before_hold_release": True},
+    {"txn_id": "T071", "account_id": "ACC_7743", "date": "2026-03-27", "type": "check_deposit",
+     "amount": 8000,  "merchant": None, "channel": "mobile", "city": "San Antonio", "state": "TX",
+     "remitter": "Unknown Payer 5"},
+    {"txn_id": "T072", "account_id": "ACC_7743", "date": "2026-03-27", "type": "atm_withdrawal",
+     "amount": -7400, "merchant": None, "channel": "atm",    "city": "San Antonio", "state": "TX",
+     "before_hold_release": True},
+
     # ── Clean account baseline — ACC_1102 ─────────────────────────────────────
     {"txn_id": "T031", "account_id": "ACC_1102", "date": "2026-03-01", "type": "payroll_deposit",
      "amount": 8400,  "merchant": "Citibank Payroll","channel": "ach",  "city": "Dallas",    "state": "TX"},
@@ -283,10 +379,55 @@ KYC_RECORDS = {
         "prior_application_date": "2025-11-03",
         "prior_application_name": "David R. Forsyth",
     },
+    "ACC_6634": {
+        "account_id": "ACC_6634",
+        "full_name": "Eleanor J. Whitfield",
+        "dob": "1948-09-02",
+        "ssn_last4": "5512",
+        "address": "77 Heritage Oaks Dr, Plano, TX 75024",
+        "id_type": "drivers_license",
+        "id_state": "TX",
+        "id_verified": True,
+        "kyc_status": "passed",
+        "kyc_date": "2001-05-10",
+        "ofac_screened": True,
+        "ofac_match": False,
+        "pep_match": False,
+        "adverse_media": False,
+        # Key finding: brand-new authorized signer, zero precedent in 25 years on file
+        "notes": "25-year customer, historically low-activity retirement account. New authorized "
+                 "signer 'Kevin Whitfield' (listed as grandson) added 2026-03-17 — no prior "
+                 "authorized signers on file in the account's 25-year history.",
+        "authorized_signer_added": "2026-03-17",
+        "authorized_signer_name": "Kevin Whitfield",
+    },
+    "ACC_7743": {
+        "account_id": "ACC_7743",
+        "full_name": "Jamal K. Reyes",
+        "dob": "1999-02-18",
+        "ssn_last4": "6690",
+        "address": "440 Alamo Plaza Apt 9, San Antonio, TX 78205",
+        "id_type": "drivers_license",
+        "id_state": "TX",
+        "id_verified": True,
+        "kyc_status": "passed",
+        "kyc_date": "2025-10-02",
+        "ofac_screened": True,
+        "ofac_match": False,
+        "pep_match": False,
+        "adverse_media": False,
+        # Key finding: the holder's own identity isn't in question — the concern is whose
+        # money is moving through the account, not who the account belongs to
+        "notes": "Account holder's own identity is not in question. Five check deposits over 7 "
+                 "days from five different, unrelated remitters, each followed same-day by "
+                 "withdrawal before standard hold periods would release — consistent with a "
+                 "recruited money mule (e.g. a 'payment processing job' scam) rather than the "
+                 "holder's own funds.",
+    },
 }
 
 # ---------------------------------------------------------------------------
-# Fraud alerts (3 — one per case, these trigger the orchestrator)
+# Fraud alerts (5 — one per case, these trigger the orchestrator)
 # ---------------------------------------------------------------------------
 
 FRAUD_ALERTS = [
@@ -334,6 +475,37 @@ FRAUD_ALERTS = [
         "assigned_to": None,
         "status": "open",
         "case_id": "CASE-003",
+    },
+    {
+        "alert_id": "ALERT-004",
+        "account_id": "ACC_6634",
+        "alert_type": "elder_financial_exploitation",
+        "triggered_at": "2026-03-28T11:05:00Z",
+        "triggered_by": "aml_rule_engine",
+        "rule_name": "AUTHORIZED_SIGNER_FUND_DIVERSION",
+        "description": "New authorized signer added 2026-03-17 to a 25-year, historically "
+                       "low-activity retirement account. $34,500 in transfers to that signer's "
+                       "personal account over the following 11 days — no comparable activity "
+                       "anywhere in the account's prior history.",
+        "priority": "HIGH",
+        "assigned_to": None,
+        "status": "open",
+        "case_id": "CASE-004",
+    },
+    {
+        "alert_id": "ALERT-005",
+        "account_id": "ACC_7743",
+        "alert_type": "money_mule_check_kiting",
+        "triggered_at": "2026-03-27T15:30:00Z",
+        "triggered_by": "check_fraud_detection_model",
+        "rule_name": "RAPID_CHECK_DEPOSIT_WITHDRAWAL",
+        "description": "Five third-party check deposits totaling $42,000 over 7 days, each from a "
+                       "different, unrelated remitter, followed same-day by withdrawal before "
+                       "standard hold periods release. Classic money-mule / check-kiting signature.",
+        "priority": "HIGH",
+        "assigned_to": None,
+        "status": "open",
+        "case_id": "CASE-005",
     },
 ]
 
@@ -470,6 +642,88 @@ AGENT_OUTPUTS = {
                               "High confidence synthetic identity.",
         },
     },
+    "CASE-004": {
+        "transaction_analyst": {
+            "agent_role": "transaction_analyst",
+            "case_id": "CASE-004",
+            "findings": {
+                "pattern": "elder_fund_diversion",
+                "transfer_count": 5,
+                "cumulative_transfers": 34500,
+                "new_payee": "K. Whitfield Personal",
+                "days_since_signer_added": 11,
+                "prior_comparable_activity": False,
+            },
+            "recommendation": "ESCALATE — sustained transfers to a newly added payee, zero precedent in 25-year history",
+        },
+        "account_profiler": {
+            "agent_role": "account_profiler",
+            "case_id": "CASE-004",
+            "findings": {
+                "account_tenure_days": 9089,
+                "risk_score": 68,
+                "flags": ["elder_customer", "new_authorized_signer"],
+                "prior_sar_count": 0,
+                "average_monthly_balance": 6200,
+                "activity_inconsistent_with_profile": True,
+            },
+            "recommendation": "ESCALATE — new authorized signer plus fund diversion on an elder customer's account",
+        },
+        "kyc_specialist": {
+            "agent_role": "kyc_specialist",
+            "case_id": "CASE-004",
+            "findings": {
+                "kyc_status": "passed",
+                "ofac_match": False,
+                "pep_match": False,
+                "adverse_media": False,
+                "authorized_signer_added": "2026-03-17",
+                "authorized_signer_name": "Kevin Whitfield",
+            },
+            "recommendation": "ESCALATE — account holder's own identity is not in question; concern is "
+                              "exploitation by the newly authorized signer, warranting an APS referral",
+        },
+    },
+    "CASE-005": {
+        "transaction_analyst": {
+            "agent_role": "transaction_analyst",
+            "case_id": "CASE-005",
+            "findings": {
+                "pattern": "money_mule_check_kiting",
+                "check_deposit_count": 5,
+                "total_checks_7d": 42000,
+                "distinct_remitters": 5,
+                "withdrawn_before_hold_release": True,
+            },
+            "recommendation": "ESCALATE — check-kiting signature: deposit then withdraw before hold release, repeated 5x",
+        },
+        "account_profiler": {
+            "agent_role": "account_profiler",
+            "case_id": "CASE-005",
+            "findings": {
+                "account_tenure_days": 178,
+                "risk_score": 81,
+                "flags": ["short_tenure", "third_party_deposits"],
+                "prior_sar_count": 0,
+                "average_monthly_balance": 1100,
+                "activity_inconsistent_with_profile": True,
+            },
+            "recommendation": "ESCALATE — short-tenure, low-balance account suddenly moving $40K+ in a week",
+        },
+        "kyc_specialist": {
+            "agent_role": "kyc_specialist",
+            "case_id": "CASE-005",
+            "findings": {
+                "kyc_status": "passed",
+                "ofac_match": False,
+                "pep_match": False,
+                "adverse_media": False,
+                "remitters_related_to_holder": False,
+            },
+            "recommendation": "ESCALATE — account holder's identity is clean; five unrelated remitters "
+                              "with no apparent relationship to the holder is the mule signature, not an ID issue",
+        },
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -494,6 +748,18 @@ WATCHLIST_ENTRIES = [
         "name": "Daniel R. Forsythe",
         "match_score": 0.0,    # No match for ACC_5590
         "notes": "No SDN match. However, name variant 'David R. Forsyth' not in SDN.",
+    },
+    {
+        "list": "OFAC_SDN",
+        "name": "Eleanor J. Whitfield",
+        "match_score": 0.0,    # No match for ACC_6634
+        "notes": "No SDN match found.",
+    },
+    {
+        "list": "OFAC_SDN",
+        "name": "Jamal K. Reyes",
+        "match_score": 0.0,    # No match for ACC_7743
+        "notes": "No SDN match found.",
     },
 ]
 
@@ -539,6 +805,34 @@ EXPECTED_OUTCOMES = {
             "SSN collision with prior declined application under different name",
             "$25,100 purchases in 38 days from thin-file account ending in NSF",
             "Merchant concentration in liquidable goods (electronics, bulk retail)",
+        ],
+    },
+    "CASE-004": {
+        "case_id": "CASE-004",
+        "account_id": "ACC_6634",
+        "fraud_type": "elder financial exploitation",
+        "expected_sar": True,
+        "expected_account_action": "freeze_and_adult_protective_services_referral",
+        "regulatory_obligation": "BSA / FinCEN SAR (see FinCEN FIN-2022-A002 elder exploitation "
+                                 "advisory); state Adult Protective Services referral",
+        "key_evidence": [
+            "New authorized signer added 2026-03-17 with zero prior history on the account",
+            "$34,500 transferred to that signer's personal account within 11 days",
+            "25-year account with no comparable activity anywhere in its history",
+        ],
+    },
+    "CASE-005": {
+        "case_id": "CASE-005",
+        "account_id": "ACC_7743",
+        "fraud_type": "money mule / check kiting",
+        "expected_sar": True,
+        "expected_account_action": "freeze_pending_investigation",
+        "regulatory_obligation": "BSA / FinCEN SAR; potential referral if account holder was "
+                                 "recruited via a job or romance scam",
+        "key_evidence": [
+            "5 third-party check deposits from unrelated remitters totaling $42,000 in 7 days",
+            "Each deposit withdrawn same-day, before standard hold periods release",
+            "Recently opened, low-balance account inconsistent with this volume of activity",
         ],
     },
 }
