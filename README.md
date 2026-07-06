@@ -4,17 +4,30 @@ Sample implementations showing how to use [AutoPIL](https://autopil.ai) — a ru
 policy enforcement, audit logging, and agent registry layer for AI agents — with
 different agent frameworks.
 
-## Contents
+## Demos
 
-| Directory | Framework | What it shows |
+All demos below live under [`autopil-LangGraph`](./autopil-LangGraph), orchestrated
+with [LangGraph](https://www.langchain.com/langgraph). Each is reasoning-driven: agents
+get a real tool-calling loop and a toolbelt wider than their AutoPIL policy actually
+authorizes, so a denial happens because the model reasoned its way toward an
+out-of-scope source — not because a scripted branch forced it to.
+
+| Demo | What it shows | Links |
 |---|---|---|
-| [`autopil-LangGraph`](./autopil-LangGraph) | LangGraph | Basics (`01_basics.py`), a multi-agent fraud investigation demo, and a client analysis demo (Databricks Unity Catalog + AWS Bedrock) — see [fraud investigation README](./autopil-LangGraph/examples/fraud_investigation/README.md) and [client analysis README](./autopil-LangGraph/examples/client_analysis/README.md) |
+| **Fraud Investigation** | 5 specialist agents (orchestrator, transaction analyst, account profiler, KYC specialist, SAR generator) investigate fraud cases, with a human-in-the-loop compliance review before the disposition is final. | [README](./autopil-LangGraph/examples/fraud_investigation/README.md) · [DESIGN](./autopil-LangGraph/examples/fraud_investigation/DESIGN.md) |
+| **Client Analysis** | 3 roles (junior analyst, senior analyst, wealth advisor) share the *exact same* Databricks Unity Catalog toolbelt — AutoPIL's policy, not the tool layer, decides what each role can reach, including purpose limitation (`task_bindings`) and a sensitivity-ceiling case. AWS Bedrock-first provider chain. | [README](./autopil-LangGraph/examples/client_analysis/README.md) · [DESIGN](./autopil-LangGraph/examples/client_analysis/DESIGN.md) |
+
+Also included: [`01_basics.py`](./autopil-LangGraph/01_basics.py), a minimal
+LangGraph nodes/edges/routing example with no AutoPIL involved.
 
 ## Setup
 
 Each example directory is self-contained with its own `requirements.txt` and
 `.env.example`. See the README inside each directory for setup and run instructions.
 
-Each `autopil-LangGraph` demo also has its own standalone live-viewer frontend, or you
-can run [`autopil-LangGraph/frontend`](./autopil-LangGraph/frontend) once to get every
-demo from a single `npm run dev` server.
+## Live viewer
+
+Each demo has its own standalone browser frontend under `examples/<demo>/frontend/`.
+Or run [`autopil-LangGraph/frontend`](./autopil-LangGraph/frontend) once to get every
+demo from a single `npm run dev` server — same `langgraph dev` backend, one nav to
+switch between demos instead of running a separate frontend per demo.
