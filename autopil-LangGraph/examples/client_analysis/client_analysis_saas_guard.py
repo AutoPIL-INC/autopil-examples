@@ -36,7 +36,7 @@ one client_analysis-specific finding:
     *this* demo's wealth_advisor agent (and would have skipped creating its own
     demo_wealth_advisor_policy, since that name already existed here). Fixed on
     institutional_portfolio_review's side with a demo-specific owner_tag
-    (`autopil-langgraph-demos-ipr`) and policy prefix (`demo_ipr_<role>_policy`) — see
+    (`Investments-team`) and policy prefix (`demo_ipr_<role>_policy`) — see
     its own ipr_saas_guard.py and institutional_portfolio_review_demo.py. This file's
     own owner_tag didn't need to change; the fix just makes sure nothing else reuses
     it by accident.

@@ -272,7 +272,7 @@ Verified live against the same real trial tenant used for the other 3 demos
    `demo_wealth_advisor_policy` too, since `ensure_policy()` only checks for a name
    match (that name already existed, bound to `client_analysis`'s
    `catalog.finance.*` sources, not this demo's `catalog.wealth.*` ones). Fixed with a
-   demo-specific `owner_tag` (`autopil-langgraph-demos-ipr`) and policy prefix
+   demo-specific `owner_tag` (`Investments-team`) and policy prefix
    (`demo_ipr_<role>_policy`) — confirmed via a second bootstrap run producing 8 fresh,
    distinct `agent_id`s, and confirmed the `wealth_advisor` agent's `policy_name` came
    back as `demo_ipr_wealth_advisor_policy`, not the shared one.

@@ -258,7 +258,7 @@ if _SAAS_MODE:
         ensure_policy(_API_URL, os.environ["AUTOPIL_ADMIN_KEY"], f"demo_ipr_{role}_policy", role, spec)
     AGENT_IDS.update(bootstrap_agents(
         _API_URL, os.environ["AUTOPIL_ADMIN_KEY"], roles=list(AGENT_IDS),
-        owner_tag="autopil-langgraph-demos-ipr",
+        owner_tag="Investments-team",
         policy_name_for=lambda role: f"demo_ipr_{role}_policy",
     ))
     _remote_guard = RemoteContextGuard(_API_URL, os.environ["AUTOPIL_EVALUATE_KEY"], os.environ["AUTOPIL_ADMIN_KEY"])

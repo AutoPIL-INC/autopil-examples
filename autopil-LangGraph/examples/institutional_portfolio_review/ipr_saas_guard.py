@@ -42,7 +42,7 @@ fraud_investigation/client_analysis's own hosted-mode copies:
     demo_wealth_advisor_policy, since that name already existed (bound to
     client_analysis's `catalog.finance.*` sources, not this demo's
     `catalog.wealth.*` ones). Fixed with a demo-specific `owner_tag`
-    (`autopil-langgraph-demos-ipr`) and policy prefix (`demo_ipr_<role>_policy`) — see
+    (`Investments-team`) and policy prefix (`demo_ipr_<role>_policy`) — see
     `institutional_portfolio_review_demo.py`'s `_SAAS_MODE` block. Any *new* demo
     added to this repo needs its own distinct owner_tag/policy-prefix scheme too, not
     just a unique role-name check — role names **will** repeat across demos over
