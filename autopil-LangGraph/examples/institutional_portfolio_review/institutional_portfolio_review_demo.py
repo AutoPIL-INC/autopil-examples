@@ -102,12 +102,174 @@ def _register_agents() -> None:
         )
 
 
-_register_agents()
+# Hosted AutoPIL SaaS trial mode — opt in by setting both AUTOPIL_ADMIN_KEY and
+# AUTOPIL_EVALUATE_KEY (same explicit-opt-in pattern as the other 3 demos). Verified
+# live against a real trial tenant — see saas_guard.py's module docstring: none of
+# this demo's 8 pre-seeded role policies on the shared tenant actually match (they
+# use plain source names; this demo's local policy uses catalog.wealth./catalog.risk.
+# prefixed names), so _POLICY_SPECS below gets translated into 8 brand-new
+# "demo_<role>_policy" policies via ensure_policy() rather than reusing anything
+# pre-seeded.
+_SAAS_MODE = bool(os.getenv("AUTOPIL_ADMIN_KEY")) and bool(os.getenv("AUTOPIL_EVALUATE_KEY"))
 
-wealth_guard = ContextGuard(policy_path=str(WEALTH_POLICY_FILE), audit_db=str(AUDIT_DB),
-                             tenant_id=TENANT_ID, agent_registry_store=AGENT_REGISTRY_STORE)
-risk_guard   = ContextGuard(policy_path=str(RISK_POLICY_FILE), audit_db=str(AUDIT_DB),
-                             tenant_id=TENANT_ID, agent_registry_store=AGENT_REGISTRY_STORE)
+# Field-for-field translation of portfolio_review_wealth.yaml/portfolio_review_risk.yaml
+# into CreatePolicyRequest bodies — source names kept exactly as this demo already
+# sends them (catalog.wealth.*/catalog.risk.* prefixed), so no other code here needs
+# to change for SaaS mode. session_ttl_minutes/sensitivity_decay are omitted — no such
+# field exists on this endpoint (confirmed against the real OpenAPI schema).
+_POLICY_SPECS = {
+    "portfolio_orchestrator": {
+        "description": "Orchestrates institutional reviews; routes to sub-agents; no raw portfolio data access",
+        "allowed_sources": ["catalog.wealth.client_profile", "catalog.wealth.agent_outputs"],
+        "denied_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.other_client_portfolios",
+                            "catalog.wealth.rebalancing_instructions", "catalog.risk.credit_scores"],
+        "allowed_tasks": ["portfolio_review", "agent_routing", "workflow_orchestration"],
+        "denied_tasks": ["trade_execution", "credit_decision"],
+        "max_sensitivity": "high", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "portfolio_review", "permitted_sources": ["catalog.wealth.client_profile", "catalog.wealth.agent_outputs"]},
+            {"task": "agent_routing", "permitted_sources": ["catalog.wealth.client_profile"]},
+            {"task": "workflow_orchestration", "permitted_sources": ["catalog.wealth.client_profile", "catalog.wealth.agent_outputs"]},
+        ],
+    },
+    "wealth_advisor": {
+        "description": "Client portfolio and market data for advisory; blocked from other clients and pricing models",
+        "allowed_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.market_data",
+                             "catalog.wealth.client_profile", "catalog.wealth.product_catalog",
+                             "catalog.wealth.research_reports"],
+        "denied_sources": ["catalog.wealth.other_client_portfolios", "catalog.wealth.internal_pricing_models",
+                            "catalog.wealth.executive_communications", "catalog.risk.credit_scores"],
+        "allowed_tasks": ["portfolio_review", "rebalancing_recommendation", "product_pitch", "client_report"],
+        "denied_tasks": ["trade_execution", "account_freeze", "credit_decision"],
+        "max_sensitivity": "high", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "portfolio_review", "permitted_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.client_profile"]},
+            {"task": "rebalancing_recommendation", "permitted_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.market_data", "catalog.wealth.product_catalog"]},
+            {"task": "product_pitch", "permitted_sources": ["catalog.wealth.product_catalog", "catalog.wealth.research_reports", "catalog.wealth.client_profile"]},
+            {"task": "client_report", "permitted_sources": ["catalog.wealth.client_profile", "catalog.wealth.portfolio_holdings", "catalog.wealth.market_data", "catalog.wealth.research_reports"]},
+        ],
+    },
+    "investment_analyst": {
+        "description": "Research and market data analysis; no client PII or portfolio holdings access",
+        "allowed_sources": ["catalog.wealth.market_data", "catalog.wealth.research_reports",
+                             "catalog.wealth.macro_indicators", "catalog.wealth.sec_filings",
+                             "catalog.wealth.economic_indicators", "catalog.wealth.other_client_portfolios"],
+        "denied_sources": ["catalog.wealth.client_profile", "catalog.wealth.portfolio_holdings", "catalog.risk.credit_scores"],
+        "allowed_tasks": ["market_analysis", "report_generation", "sector_review", "benchmarking"],
+        "denied_tasks": ["trade_execution", "credit_decision", "product_recommendation"],
+        "max_sensitivity": "critical",
+        "task_bindings": [
+            {"task": "market_analysis", "permitted_sources": ["catalog.wealth.market_data", "catalog.wealth.macro_indicators", "catalog.wealth.economic_indicators"]},
+            {"task": "report_generation", "permitted_sources": ["catalog.wealth.research_reports", "catalog.wealth.market_data", "catalog.wealth.sec_filings", "catalog.wealth.economic_indicators"]},
+            {"task": "sector_review", "permitted_sources": ["catalog.wealth.market_data", "catalog.wealth.research_reports", "catalog.wealth.sec_filings"]},
+            {"task": "benchmarking", "permitted_sources": ["catalog.wealth.other_client_portfolios", "catalog.wealth.market_data", "catalog.wealth.research_reports"]},
+        ],
+    },
+    "macro_analyst": {
+        "description": "Macro and economic analysis; no client portfolio or profile data access",
+        "allowed_sources": ["catalog.wealth.macro_indicators", "catalog.wealth.economic_indicators",
+                             "catalog.wealth.market_data", "catalog.wealth.research_reports",
+                             "catalog.wealth.geopolitical_signals"],
+        "denied_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.client_profile",
+                            "catalog.wealth.other_client_portfolios", "catalog.risk.credit_scores",
+                            "catalog.wealth.rebalancing_instructions"],
+        "allowed_tasks": ["macro_analysis", "market_outlook", "regime_assessment", "scenario_modeling"],
+        "denied_tasks": ["trade_execution", "credit_decision", "product_recommendation", "client_report"],
+        "max_sensitivity": "medium",
+        "task_bindings": [
+            {"task": "macro_analysis", "permitted_sources": ["catalog.wealth.macro_indicators", "catalog.wealth.economic_indicators", "catalog.wealth.geopolitical_signals"]},
+            {"task": "market_outlook", "permitted_sources": ["catalog.wealth.market_data", "catalog.wealth.macro_indicators", "catalog.wealth.economic_indicators"]},
+            {"task": "regime_assessment", "permitted_sources": ["catalog.wealth.macro_indicators", "catalog.wealth.geopolitical_signals", "catalog.wealth.research_reports"]},
+            {"task": "scenario_modeling", "permitted_sources": ["catalog.wealth.macro_indicators", "catalog.wealth.economic_indicators", "catalog.wealth.market_data", "catalog.wealth.geopolitical_signals"]},
+        ],
+    },
+    "rebalancing_agent": {
+        "description": "Per-client rebalancing analysis; scoped to assigned client, no cross-client access",
+        "allowed_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.rebalancing_instructions",
+                             "catalog.wealth.market_data", "catalog.wealth.product_catalog", "catalog.wealth.agent_outputs"],
+        "denied_sources": ["catalog.wealth.other_client_portfolios", "catalog.wealth.client_profile",
+                            "catalog.risk.credit_scores", "catalog.wealth.macro_indicators"],
+        "allowed_tasks": ["rebalancing_recommendation", "drift_analysis", "trade_proposal"],
+        "denied_tasks": ["trade_execution", "credit_decision", "client_report", "cross_client_comparison"],
+        "max_sensitivity": "high", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "rebalancing_recommendation", "permitted_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.rebalancing_instructions", "catalog.wealth.market_data", "catalog.wealth.product_catalog"]},
+            {"task": "drift_analysis", "permitted_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.market_data"]},
+            {"task": "trade_proposal", "permitted_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.rebalancing_instructions", "catalog.wealth.market_data", "catalog.wealth.product_catalog"]},
+        ],
+    },
+    "report_generator": {
+        "description": "Generates client reports from compiled agent outputs only; no raw portfolio data access",
+        "allowed_sources": ["catalog.wealth.agent_outputs", "catalog.wealth.research_reports", "catalog.wealth.regulatory_templates"],
+        "denied_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.client_profile",
+                            "catalog.wealth.other_client_portfolios", "catalog.wealth.portfolio_metrics",
+                            "catalog.wealth.rebalancing_instructions"],
+        "allowed_tasks": ["client_report", "portfolio_summary", "quarterly_review"],
+        "denied_tasks": ["trade_execution", "cross_client_comparison", "rebalancing_recommendation"],
+        "max_sensitivity": "critical", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "client_report", "permitted_sources": ["catalog.wealth.agent_outputs", "catalog.wealth.research_reports", "catalog.wealth.regulatory_templates"]},
+            {"task": "portfolio_summary", "permitted_sources": ["catalog.wealth.agent_outputs"]},
+            {"task": "quarterly_review", "permitted_sources": ["catalog.wealth.agent_outputs", "catalog.wealth.research_reports", "catalog.wealth.regulatory_templates"]},
+        ],
+    },
+    "credit_risk_analyst": {
+        "description": "Portfolio metrics and economic analysis; no client PII or board materials access",
+        "allowed_sources": ["catalog.risk.loan_history", "catalog.risk.credit_scores",
+                             "catalog.wealth.economic_indicators", "catalog.wealth.portfolio_metrics",
+                             "catalog.risk.delinquency_records"],
+        "denied_sources": ["catalog.wealth.executive_communications", "catalog.risk.board_materials", "catalog.wealth.client_profile"],
+        "allowed_tasks": ["stress_test", "pd_modeling", "limit_review", "risk_report"],
+        "denied_tasks": ["credit_decision", "account_freeze"],
+        "max_sensitivity": "high", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "stress_test", "permitted_sources": ["catalog.risk.loan_history", "catalog.risk.credit_scores", "catalog.wealth.portfolio_metrics", "catalog.wealth.economic_indicators"]},
+            {"task": "pd_modeling", "permitted_sources": ["catalog.risk.loan_history", "catalog.risk.credit_scores", "catalog.risk.delinquency_records"]},
+            {"task": "limit_review", "permitted_sources": ["catalog.risk.loan_history", "catalog.risk.credit_scores", "catalog.wealth.portfolio_metrics"]},
+            {"task": "risk_report", "permitted_sources": ["catalog.wealth.portfolio_metrics", "catalog.risk.delinquency_records", "catalog.wealth.economic_indicators"]},
+        ],
+    },
+    "settlement_agent": {
+        "description": "Trade settlement and counterparty verification; no client PII or portfolio holdings access",
+        "allowed_sources": ["catalog.risk.trade_confirmations", "catalog.risk.counterparty_data"],
+        "denied_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.client_profile", "catalog.risk.credit_scores"],
+        "allowed_tasks": ["trade_settlement", "counterparty_verification"],
+        "denied_tasks": ["trade_execution", "credit_decision"],
+        "max_sensitivity": "high", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "trade_settlement", "permitted_sources": ["catalog.risk.trade_confirmations"]},
+            {"task": "counterparty_verification", "permitted_sources": ["catalog.risk.counterparty_data"]},
+        ],
+    },
+}
+
+if _SAAS_MODE:
+    from ipr_saas_guard import RemoteContextGuard, bootstrap_agents, ensure_policy
+    _API_URL = os.getenv("AUTOPIL_API_URL", "https://autopil-api.onrender.com")
+    # owner_tag/policy names must be demo-specific, not the generic "autopil-langgraph-
+    # demos" tag fraud_investigation/client_analysis use — this demo's "wealth_advisor"
+    # role name collides with client_analysis's own, and bootstrap_agents() only
+    # de-dupes by (agent_role, owner_tag), not by which demo is asking. Caught live: a
+    # first attempt with the generic tag silently bound this demo's wealth_advisor
+    # agent to client_analysis's existing one (and would have skipped creating this
+    # demo's own demo_wealth_advisor_policy for the same reason, since ensure_policy()
+    # only checks for a name match). ipr_-prefixed tag/policy names below avoid it.
+    for role, spec in _POLICY_SPECS.items():
+        ensure_policy(_API_URL, os.environ["AUTOPIL_ADMIN_KEY"], f"demo_ipr_{role}_policy", role, spec)
+    AGENT_IDS.update(bootstrap_agents(
+        _API_URL, os.environ["AUTOPIL_ADMIN_KEY"], roles=list(AGENT_IDS),
+        owner_tag="autopil-langgraph-demos-ipr",
+        policy_name_for=lambda role: f"demo_ipr_{role}_policy",
+    ))
+    _remote_guard = RemoteContextGuard(_API_URL, os.environ["AUTOPIL_EVALUATE_KEY"], os.environ["AUTOPIL_ADMIN_KEY"])
+    wealth_guard = _remote_guard
+    risk_guard = _remote_guard
+else:
+    _register_agents()
+    wealth_guard = ContextGuard(policy_path=str(WEALTH_POLICY_FILE), audit_db=str(AUDIT_DB),
+                                 tenant_id=TENANT_ID, agent_registry_store=AGENT_REGISTRY_STORE)
+    risk_guard   = ContextGuard(policy_path=str(RISK_POLICY_FILE), audit_db=str(AUDIT_DB),
+                                 tenant_id=TENANT_ID, agent_registry_store=AGENT_REGISTRY_STORE)
 
 ROLE_GUARD = {role: (wealth_guard if role in WEALTH_ROLES else risk_guard)
               for role in [*WEALTH_ROLES, *RISK_ROLES]}

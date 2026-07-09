@@ -90,7 +90,7 @@ def _register_agents() -> None:
 _SAAS_MODE = bool(os.getenv("AUTOPIL_ADMIN_KEY")) and bool(os.getenv("AUTOPIL_EVALUATE_KEY"))
 
 if _SAAS_MODE:
-    from saas_guard import RemoteContextGuard, bootstrap_agents
+    from fraud_saas_guard import RemoteContextGuard, bootstrap_agents
     _API_URL = os.getenv("AUTOPIL_API_URL", "https://autopil-api.onrender.com")
     # AGENT_IDS' local string values (e.g. "fraud-orchestrator-001") aren't registered
     # anywhere on a hosted tenant. bootstrap_agents mints/reuses a real, approved agent

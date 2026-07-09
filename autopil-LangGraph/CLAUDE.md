@@ -93,17 +93,18 @@ as a whole.
   `fraud_investigation` already has. When adding a new demo, check its module names
   against every existing demo's, then verify with `langgraph dev` (not just the
   demo's own CLI script) before calling it done.
-- **A live, unfixed instance of the above exists today**: `fraud_investigation` and
-  `client_analysis` each have their own `saas_guard.py` (added when hosted SaaS trial
-  mode was wired into both — see their own DESIGN.md appendices), and those two files
-  do collide under this exact rule. Currently harmless — both copies define the
-  identical `RemoteContextGuard`/`bootstrap_agents()` interface, so whichever one
-  `sys.modules` caches first is functionally interchangeable with the other — but if
-  the two copies are ever edited independently without staying in sync, one demo will
-  silently run the other's code under `langgraph dev` with no error. Not fixed as
-  part of the `aml_compliance` split (out of scope for that change); worth a real fix
-  (e.g. a shared package, or distinct per-demo names) before either copy's behavior is
-  meant to diverge.
+- **This exact collision actually happened, live, once all 4 demos had hosted SaaS
+  trial mode.** Each demo's own `saas_guard.py` was identically named — harmless while
+  they were all functionally interchangeable, but the moment
+  `institutional_portfolio_review`'s copy grew an `ensure_policy()` function the
+  others didn't have, `langgraph dev` crashed on startup (`ImportError: cannot import
+  name 'ensure_policy'`) because whichever demo's graph loaded first "won" the
+  `sys.modules['saas_guard']` slot for every demo. Fixed by renaming every copy to a
+  demo-specific module name — `fraud_saas_guard.py`, `client_analysis_saas_guard.py`,
+  `ipr_saas_guard.py`, `aml_saas_guard.py` — and updating each demo's `from saas_guard
+  import ...` to match. Any *new* per-demo module needs a name check against every
+  existing demo's before it's added, not just an assumption that "it hasn't collided
+  yet" means it's safe.
 
 ## Working with the fraud investigation demo
 
@@ -218,6 +219,16 @@ as a whole.
 - The audit database
   `examples/institutional_portfolio_review/institutional_portfolio_review_audit.db` is
   disposable — safe to delete between runs.
+- **Optional hosted AutoPIL SaaS trial mode** — the one demo whose pre-seeded role
+  policies on the shared trial tenant *don't* match at all (plain source names vs.
+  this demo's `catalog.wealth.*`/`catalog.risk.*` prefixed convention), so
+  `ipr_saas_guard.py`'s `ensure_policy()` creates 8 dedicated `demo_ipr_<role>_policy`
+  policies instead of reusing anything. Also the demo that caught the cross-demo
+  `wealth_advisor` agent/policy-name collision with `client_analysis` — see
+  `ipr_saas_guard.py`'s module docstring and the module-name-collision note above for
+  both incidents this demo's SaaS wiring surfaced. `wealth_guard`/`risk_guard`
+  collapse into the same `RemoteContextGuard` instance in SaaS mode, since the hosted
+  API is one tenant regardless of which local YAML a policy conceptually belongs to.
 
 ## Working with the aml_compliance demo
 
@@ -246,8 +257,11 @@ as a whole.
 - `decision_node` is rule-based, grounded in the real underlying signal data
   (`aml_case_data.WATCHLIST`/`IDENTITY_RECORDS`/`TRANSACTION_HISTORY`) — not any
   role's self-reported finding — same principle as every other demo's decision node.
-- Hosted AutoPIL SaaS trial mode is **not wired for this demo** (unlike
-  `fraud_investigation`/`client_analysis`) — deliberate, same "prove local mode first"
-  sequencing those two demos followed before adding it.
+- **Optional hosted AutoPIL SaaS trial mode**, same auto-detect design as the other 3
+  demos — see `aml_saas_guard.py` and its own module docstring. Unlike
+  `institutional_portfolio_review`, this demo's 3 pre-seeded role policies on the
+  shared trial tenant are close enough to reuse as-is (`aml_investigator_policy`
+  matches byte-for-byte; `kyc_agent_policy`/`compliance_officer_policy` have minor,
+  disclosed drift) — no dedicated policy creation needed here.
 - The audit database `examples/aml_compliance/aml_compliance_audit.db` is disposable
   — safe to delete between runs.

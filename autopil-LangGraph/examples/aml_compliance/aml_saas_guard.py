@@ -2,37 +2,58 @@
 Hosted AutoPIL SaaS trial mode — a drop-in ContextGuard replacement that calls the
 real hosted API (POST /v1/context/evaluate) instead of evaluating policy locally.
 
+Named aml_saas_guard.py, not the generic saas_guard.py this file started as — every
+demo with hosted-mode support had an identically-named saas_guard.py, which collided
+under langgraph dev (whichever demo's graph loaded first "won," and every other demo
+silently imported *that* demo's copy instead of its own, crashing the whole server
+with an ImportError the day institutional_portfolio_review's copy diverged in shape
+from the others). See fraud_investigation's own fraud_saas_guard.py for the fuller
+writeup.
+
 Activated automatically when AUTOPIL_ADMIN_KEY and AUTOPIL_EVALUATE_KEY are both set
-(see client_analysis_demo.py's guard construction) — same explicit-opt-in pattern as
-this file's own AWS_BEDROCK_MODEL_ID. Falls back to the embedded ContextGuard
-otherwise, so nothing changes for anyone not opting into a hosted trial.
+(see aml_compliance_demo.py's guard construction) — same explicit-opt-in pattern as
+the other 3 demos in this repo. Falls back to the embedded ContextGuard otherwise, so
+nothing changes for anyone not opting into a hosted trial.
 
-Identical to fraud_investigation/saas_guard.py (kept as a per-demo copy, same
-"standalone from pip install" convention as this repo's frontend files) except for
-one client_analysis-specific finding:
-
-  - This tenant has TWO policies with agent_role="wealth_advisor" —
-    "demo_wealth_advisor_policy" (matches policies/financial_services/
-    client_analysis.yaml's wealth_advisor_policy byte-for-byte — confirmed by diffing
-    GET /v1/policies against the local YAML) and "wealth_advisor_policy" (an unrelated
-    generic wealth-demo policy with entirely different source names, e.g.
-    "portfolio_holdings" instead of "catalog.finance.client_portfolios"). The evaluate
-    endpoint falls back to a role-scan when an agent has no explicit policy_name
-    bound, which would non-deterministically risk binding to the wrong one of the
-    two. client_analysis_demo.py's bootstrap call pins policy_name explicitly per
-    role for exactly this reason — see _SAAS_POLICY_NAMES there.
-  - junior_analyst_policy and senior_analyst_policy have no such collision and
-    matched the local YAML exactly, same as fraud_investigation's 5 roles did.
+Verified live against a real trial tenant (base_url https://autopil-api.onrender.com,
+2026-07-10):
+  - POST /v1/context/evaluate requires agent_id unconditionally — an unregistered or
+    unapproved agent_id is denied before policy ever runs (denial_type: "identity").
+    The local SDK makes agent_id optional depending on the policy; the hosted API
+    does not.
+  - Agents are created with status "draft" and must be explicitly approved
+    (PATCH /v1/agents/{id}/status) before they can evaluate anything.
+  - **This tenant's pre-seeded `aml_investigator_policy`/`kyc_agent_policy`/
+    `compliance_officer_policy` are a close, but not exact, match** for
+    `policies/financial_services/aml_compliance.yaml`. `aml_investigator_policy`
+    matches byte-for-byte. `kyc_agent_policy` matches except one extra denied source
+    (`application_forms`, not present locally — harmless, since this demo never
+    reaches for it anyway). `compliance_officer_policy` has real drift: the hosted
+    version's `allowed_sources` additionally includes `loan_history`/
+    `portfolio_metrics` (present in the *original* institutional_portfolio_review
+    policy this was split from, but trimmed from this demo's own YAML since no tool
+    here exercises them), and its `sar_filing`/`cross_client_audit`/
+    `fiduciary_review` task_bindings differ slightly. Reused as-is rather than
+    creating a dedicated `demo_`-prefixed policy (unlike institutional_portfolio_
+    review's `ipr_saas_guard.py`, which had to, since none of *its* pre-seeded
+    policies matched at all) — this is a deliberate "good enough, disclosed" call,
+    not an oversight: `compliance_officer` in SaaS mode has marginally broader real
+    access than local mode, never narrower, so no local-mode-only denial becomes a
+    false ALLOW remotely.
+  - `aml_investigator`/`kyc_agent`/`compliance_officer` don't collide with any other
+    demo's role names on this tenant (checked directly against the full policy
+    list), so the generic `owner_tag="autopil-langgraph-demos"` is safe to reuse here
+    — unlike institutional_portfolio_review's `wealth_advisor`, which does collide
+    with client_analysis's role of the same name (see `ipr_saas_guard.py`).
   - GET /v1/audit/sessions/{id} requires the Admin key — an Evaluate-scoped key gets
     403 Forbidden calling it, even though that same key works fine for
     POST /v1/context/evaluate. RemoteContextGuard below needs both keys for exactly
     this reason: evaluate_key for decisions, admin_key for reading the trail back.
-
-See fraud_investigation/DESIGN.md's "Appendix: hosted trial mode" for the fuller set
-of things verified live against the real trial tenant (agent_id required
-unconditionally, agents start draft and need explicit approval, role-spoofing checks
-enforced identically, etc.) — all of that applies here too, since it's the same
-hosted API and the same RemoteContextGuard implementation.
+  - Known gap, disclosed rather than silently claimed as at-parity: the hosted policy
+    schema (GET/POST /v1/policies) has no session_ttl_minutes or sensitivity_decay
+    field — not exercised by this demo's own local policy either way, so no
+    behavioral gap here specifically, just the same structural limitation
+    fraud_investigation/client_analysis both disclose.
 """
 
 import httpx
@@ -116,16 +137,15 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
     """Idempotently ensure each role in `roles` has a real, approved agent registered
     on the hosted tenant, explicitly bound to its policy (never relying on the
     evaluate endpoint's role-scan fallback — see the module docstring on why that's
-    risky on a shared trial tenant, especially for wealth_advisor here). Returns
-    {agent_role: agent_id}.
+    risky on a shared trial tenant). Returns {agent_role: agent_id}.
 
     Reuses an existing agent (matching agent_role + owner_tag) if one's already
     registered from a prior run/process, rather than creating a new one every time —
     approves it first if it's still in "draft". `owner_tag` (stored in the `owner`
     field) is purely this lookup key, distinct from `owner_team` — the actual
-    business-accountable team, e.g. "Wealth Team" — which is kept in sync via PUT on
-    every call if it's out of date, including on agents that were registered before
-    this parameter existed.
+    business-accountable team — which is kept in sync via PUT on every call if it's
+    out of date, including on agents that were registered before this parameter
+    existed.
     """
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
     existing = client.get("/v1/agents", params={"framework": "langgraph", "owner": owner_tag}).json()

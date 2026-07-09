@@ -165,6 +165,32 @@ persistence itself and refuses to load a graph pre-compiled with one.
   orchestrator re-route-after-denial or `client_analysis`'s tiered escalation, every
   case runs the same fixed 3-role sequence start to finish (see DESIGN.md §11).
 
+## Hosted AutoPIL SaaS trial mode (optional)
+
+By default this demo runs entirely against the local embedded `ContextGuard` — no
+account needed. To run it against a real hosted AutoPIL trial instead:
+
+1. **Start a free trial** at [autopil.ai/trial](https://www.autopil.ai/trial).
+2. **Get your keys** — go to **Settings** in the dashboard and generate an **Admin**
+   key and an **Evaluate** key.
+3. **Set both in `.env`** (see `.env.example`) — every run then automatically
+   switches to calling the real hosted API instead of the local one:
+
+```bash
+AUTOPIL_ADMIN_KEY=your-admin-key-here
+AUTOPIL_EVALUATE_KEY=your-evaluate-key-here
+# AUTOPIL_API_URL=https://autopil-api.onrender.com   # override if your trial lives elsewhere
+```
+
+Unlike `institutional_portfolio_review`, this demo's 3 roles' pre-seeded policies on
+a shared trial tenant are close enough to reuse as-is — no dedicated policy creation
+needed. `aml_investigator_policy` matches byte-for-byte; `kyc_agent_policy`/
+`compliance_officer_policy` have minor, disclosed drift (see `aml_saas_guard.py`'s
+module docstring) — `compliance_officer` ends up with marginally *broader* real
+access remotely than locally, never narrower.
+
+Unset either key (or leave both out of `.env`) to go back to local mode.
+
 ## Files
 
 | File | What it is |
@@ -173,14 +199,13 @@ persistence itself and refuses to load a graph pre-compiled with one.
 | `aml_case_data.py` | Fixture data — 5 accounts, 5 AML cases mixed severity, plus the underlying transaction/watchlist/identity/audit tables |
 | `policies/financial_services/aml_compliance.yaml` | The consolidated 3-role AutoPIL policy matrix |
 | `aml_compliance_demo.py` | The demo itself |
+| `aml_saas_guard.py` | Optional hosted-SaaS-trial guard + agent bootstrap — see "Hosted AutoPIL SaaS trial mode" above |
 | `../../langgraph.json` | Exposes `aml_compliance_demo.py:graph` to `langgraph dev` for the live viewer, alongside the other 3 demos |
 | `frontend/` | Vite + React + TypeScript live audit-trail feed, model selector, and compliance-review panel, via `@langchain/langgraph-sdk` |
 
 ## Known constraints (see DESIGN.md for the full list)
 
-- `ContextGuard.protect()` is embedded-only — this runs against local SQLite, not a
-  real hosted AutoPIL instance. Hosted SaaS trial mode isn't wired for this demo yet
-  (see DESIGN.md §3) — `fraud_investigation`/`client_analysis` both have it if you want
-  to see the pattern.
+- `ContextGuard.protect()` is embedded-only by default; a hosted AutoPIL trial API is
+  supported as an optional mode (see above).
 - Non-determinism is a property of this demo, not a defect — a run with zero denials
   is a legitimate outcome, just a less interesting one to watch.

@@ -135,22 +135,55 @@ ended up only partially complete. All 11 roles are still exercised, just spread 
   legitimate, conservative model judgment, not a bug — `decision_node` still reports it
   accurately (a completed step needs both a `COMPLETED` self-report and real data).
 
+## Hosted AutoPIL SaaS trial mode (optional)
+
+By default this demo runs entirely against the local embedded `ContextGuard`s — no
+account needed. To run it against a real hosted AutoPIL trial instead:
+
+1. **Start a free trial** at [autopil.ai/trial](https://www.autopil.ai/trial).
+2. **Get your keys** — go to **Settings** in the dashboard and generate an **Admin**
+   key and an **Evaluate** key.
+3. **Set both in `.env`** (see `.env.example`) — every run then automatically
+   switches to calling the real hosted API instead of the local one:
+
+```bash
+AUTOPIL_ADMIN_KEY=your-admin-key-here
+AUTOPIL_EVALUATE_KEY=your-evaluate-key-here
+# AUTOPIL_API_URL=https://autopil-api.onrender.com   # override if your trial lives elsewhere
+```
+
+This demo needed one thing the other three didn't: none of its 8 roles' pre-seeded
+policies on a shared trial tenant actually match (they use plain source names; this
+demo's own policy uses `catalog.wealth.*`/`catalog.risk.*` prefixed names), so on
+first run it creates 8 dedicated `demo_ipr_<role>_policy` policies via
+`POST /v1/policies`, translated field-for-field from the two local YAML files — no
+change to this demo's own source naming required. `wealth_guard`/`risk_guard`
+collapse into the same remote guard instance in SaaS mode, since the hosted API is
+one tenant regardless of which local file a policy conceptually belongs to. See
+`ipr_saas_guard.py`'s module docstring for what's verified, including a cross-demo
+agent/policy naming collision this demo's `wealth_advisor` role hit against
+`client_analysis`'s role of the same name (fixed with a demo-specific tag).
+
+Unset either key (or leave both out of `.env`) to go back to local mode.
+
 ## Files
 
 | File | What it is |
 |---|---|
 | `DESIGN.md` | Design rationale — what's real vs. aspirational in the source this was adapted from, the two-policy-file design, open questions |
-| `portfolio_review_uc_data.py` | Fixture data — two simulated Unity Catalog schemas (`catalog.wealth.*`, `catalog.risk.*`), 3 institutional clients, plus the 5 review-request briefs |
-| `policies/financial_services/portfolio_review_wealth.yaml` | Wealth-advisory policy matrix (7 roles) |
-| `policies/financial_services/portfolio_review_risk.yaml` | Risk/compliance policy matrix (4 roles, including a new `settlement_agent_policy`) |
+| `portfolio_review_uc_data.py` | Fixture data — two simulated Unity Catalog schemas (`catalog.wealth.*`, `catalog.risk.*`), 3 institutional clients, plus the review-request briefs |
+| `policies/financial_services/portfolio_review_wealth.yaml` | Wealth-advisory policy matrix (6 roles) |
+| `policies/financial_services/portfolio_review_risk.yaml` | Risk/compliance policy matrix (2 roles: `credit_risk_analyst`, `settlement_agent`) |
 | `institutional_portfolio_review_demo.py` | The demo itself |
-| `../../langgraph.json` | Exposes `institutional_portfolio_review_demo.py:graph` alongside the other two demos |
+| `ipr_saas_guard.py` | Optional hosted-SaaS-trial guard + policy/agent bootstrap — see "Hosted AutoPIL SaaS trial mode" above |
+| `../../langgraph.json` | Exposes `institutional_portfolio_review_demo.py:graph` alongside the other demos |
 | `frontend/` | Vite + React + TypeScript live audit-trail feed and model selector |
 
 ## Known constraints (see DESIGN.md for the full list)
 
 - `ContextGuard.protect()` is embedded-only — local SQLite, not a real Databricks
-  Unity Catalog workspace or a hosted AutoPIL trial API.
+  Unity Catalog workspace. A hosted AutoPIL trial API is supported as an optional
+  mode (see above).
 - `require_principal_entitlements` (present in the real policy files this was adapted
   from) is not ported — it only evaluates via the hosted REST API's principal-claims
   layer, which the embedded SDK path this demo uses never populates. See DESIGN.md.

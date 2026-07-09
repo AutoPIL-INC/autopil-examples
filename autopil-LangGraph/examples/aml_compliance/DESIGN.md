@@ -40,10 +40,9 @@ LLM-driven orchestrator for the same reason).
 
 - Not adding new AutoPIL features — exercises what exists today (`ContextGuard.protect`,
   `task_bindings`, `sensitivity_decay`, `session_ttl_minutes`, audit trail).
-- Not wiring hosted AutoPIL SaaS trial mode in this round. `fraud_investigation` and
-  `client_analysis` both have this (see their own `saas_guard.py`/DESIGN.md appendices);
-  the same pattern would apply here, but it's a deliberate follow-up, not part of this
-  split — consistent with how those two demos sequenced it (local mode proven first).
+- Hosted AutoPIL SaaS trial mode was deferred out of this round's initial split, then
+  wired in as a follow-up (see §12) — same `RemoteContextGuard`/`bootstrap_agents()`
+  pattern as `fraud_investigation`/`client_analysis`.
 - Not reusing `institutional_portfolio_review`'s existing `aml_case` fixture data
   verbatim — that data was "clean" (no real watchlist hits, no delinquency, all KYC
   verified) since it was never designed as a suspicious-pattern case the way
@@ -188,9 +187,51 @@ live in §10, matched ground truth in 5/5 cases across two full runs).
 
 ## 11. Out of scope for this round
 
-- Hosted AutoPIL SaaS trial mode (see §3).
 - Any escalation/re-routing path — the 3-role sequence is fixed and linear; there's no
   equivalent of `fraud_investigation`'s orchestrator re-route-after-denial or
   `client_analysis`'s tiered human-in-the-loop escalation here, since a 3-role KYC/AML
   chain doesn't have a natural "escalate to a broader-access role" step the way those
   two demos' designs call for.
+
+## 12. Appendix: hosted trial mode
+
+Implemented as a follow-up to the initial split — see `aml_saas_guard.py` and the
+"Hosted AutoPIL SaaS trial mode" section in `aml_compliance_demo.py`. Same
+`RemoteContextGuard`/`bootstrap_agents()` design as `fraud_investigation`/
+`client_analysis`'s own hosted mode. See README.md's own "Hosted AutoPIL SaaS trial
+mode" section for how to get a trial account and Admin/Evaluate keys — this appendix
+covers what was verified, not setup steps.
+
+Verified live against the same real trial tenant used for the other 3 demos
+(`https://autopil-api.onrender.com`, 2026-07-10):
+
+1. **`aml_investigator_policy` matches the local YAML byte-for-byte.**
+   `kyc_agent_policy` matches except one extra denied source
+   (`application_forms` — harmless, this demo never reaches for it).
+   `compliance_officer_policy` has real, disclosed drift: the hosted version's
+   `allowed_sources` additionally includes `loan_history`/`portfolio_metrics` (present
+   in the *original* `institutional_portfolio_review` policy this demo's policy was
+   split from, but trimmed here since no tool exercises them), and its `sar_filing`/
+   `cross_client_audit`/`fiduciary_review` task_bindings differ slightly. Reused as-is
+   rather than creating a dedicated policy (unlike `institutional_portfolio_review`,
+   which had to) — deliberate: `compliance_officer` ends up with marginally *broader*
+   real access remotely than locally, never narrower, so no local-mode-only denial
+   becomes a false ALLOW.
+2. **None of this demo's 3 roles collide with another demo's role name** on the
+   shared trial tenant (checked directly against the full policy list) — the generic
+   `owner_tag="autopil-langgraph-demos"` is safe to reuse here, unlike
+   `institutional_portfolio_review`'s `wealth_advisor`, which does collide with
+   `client_analysis`'s role of the same name.
+3. **A live full-case run** (AML-001, structuring, via Ollama) against the hosted API
+   produced the exact same disposition as local mode (`SAR REQUIRED — structuring
+   pattern confirmed`) and the same shape of real denials (`task_bindings` purpose
+   limitation, plain `denied_sources`), including one denial specifically caused by
+   `compliance_officer_policy`'s disclosed drift (`get_client_profile` denied under
+   `cross_client_audit` — a stricter binding on the hosted side than this demo's own
+   local YAML has).
+4. **Module name collision, caught live**: this demo's `saas_guard.py` was originally
+   named identically to the other 3 demos' copies — collided under `langgraph dev`
+   the moment `institutional_portfolio_review`'s copy diverged in shape (gained an
+   `ensure_policy()` function the others lacked), crashing the whole server on
+   startup. Renamed to `aml_saas_guard.py`; see root `CLAUDE.md`'s module-name-collision
+   note for the fuller incident writeup.

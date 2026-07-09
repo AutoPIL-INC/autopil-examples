@@ -233,3 +233,65 @@ for completeness:
    `require_principal_entitlements` becomes usable — the REST layer would need to
    populate `principal_claims` from whatever identity/entitlement system authenticates
    the human behind the request, which the embedded SDK path has no hook for.
+
+## 10. Appendix: hosted trial mode
+
+Implemented — see `ipr_saas_guard.py` and the `_SAAS_MODE` block in
+`institutional_portfolio_review_demo.py`. Same `RemoteContextGuard`/
+`bootstrap_agents()` design as the other 3 demos' hosted mode, but this demo needed a
+genuinely new capability none of the others did: `ensure_policy()`, which creates
+policies via `POST /v1/policies` rather than only reusing pre-seeded ones. See
+README.md's own "Hosted AutoPIL SaaS trial mode" section for how to get a trial
+account and Admin/Evaluate keys — this appendix covers what was verified, not setup
+steps.
+
+Verified live against the same real trial tenant used for the other 3 demos
+(`https://autopil-api.onrender.com`, 2026-07-10):
+
+1. **None of this demo's 8 pre-seeded role policies on the shared trial tenant
+   actually match** — checked directly, not assumed. Every one of them uses *plain*
+   source names (`client_profile`, `portfolio_holdings`); this demo's local YAML uses
+   `catalog.wealth.*`/`catalog.risk.*` prefixed names (a real Unity-Catalog-style
+   convention this demo specifically models, unlike the flatter naming the other 3
+   demos use). Binding to any pre-seeded policy as-is would deny every call for a
+   naming mismatch, not real enforcement.
+2. **`ensure_policy()` creates 8 new policies instead**, named `demo_ipr_<role>_policy`
+   — translated field-for-field from `portfolio_review_wealth.yaml`/
+   `portfolio_review_risk.yaml` via `POST /v1/policies`, so this demo's own source
+   naming never had to change. `session_ttl_minutes`/`sensitivity_decay` are omitted
+   from every created policy — no such field exists on `CreatePolicyRequest`, confirmed
+   against the real OpenAPI schema, same disclosed gap the other 3 demos already carry
+   for different local mechanisms.
+3. **A real cross-demo collision, caught live**: a first attempt used the generic
+   `owner_tag="autopil-langgraph-demos"` and `demo_<role>_policy` naming (matching
+   `client_analysis`'s own convention) for this demo's agent bootstrap. Because this
+   demo's `wealth_advisor` role name is the same as `client_analysis`'s, and
+   `bootstrap_agents()` only de-dupes agents by `(agent_role, owner_tag)` — not by
+   which demo is asking — the attempt silently reused `client_analysis`'s existing
+   `wealth_advisor` agent, and would have skipped creating this demo's own
+   `demo_wealth_advisor_policy` too, since `ensure_policy()` only checks for a name
+   match (that name already existed, bound to `client_analysis`'s
+   `catalog.finance.*` sources, not this demo's `catalog.wealth.*` ones). Fixed with a
+   demo-specific `owner_tag` (`autopil-langgraph-demos-ipr`) and policy prefix
+   (`demo_ipr_<role>_policy`) — confirmed via a second bootstrap run producing 8 fresh,
+   distinct `agent_id`s, and confirmed the `wealth_advisor` agent's `policy_name` came
+   back as `demo_ipr_wealth_advisor_policy`, not the shared one.
+4. **Module name collision, caught live**: this demo's `saas_guard.py` was originally
+   named identically to the other 3 demos' copies (a per-demo-module-name rule this
+   repo's root `CLAUDE.md` already documents for data-fixture modules, but hadn't yet
+   been applied to `saas_guard.py`). The moment this demo's copy grew an
+   `ensure_policy()` function the others lacked, `langgraph dev` crashed on startup —
+   whichever demo's graph loaded first "won" the `sys.modules['saas_guard']` slot for
+   every demo, and `fraud_investigation`'s copy (loaded first, no `ensure_policy()`)
+   got silently imported everywhere instead. Renamed every demo's copy to a
+   demo-specific module name (`fraud_saas_guard.py`, `client_analysis_saas_guard.py`,
+   `ipr_saas_guard.py`, `aml_saas_guard.py`).
+5. **`wealth_guard`/`risk_guard` collapse into the same `RemoteContextGuard` instance
+   in SaaS mode** — the hosted API is one tenant with one evaluate endpoint regardless
+   of which local YAML file a policy conceptually belongs to, so there's no need for
+   two remote guard instances the way local mode needs two `ContextGuard`s.
+6. **A live full-case run** (PORT-001, quarterly_review, 4 roles, via Ollama) against
+   the hosted API produced real `task_bindings` denials (`wealth_advisor` reaching for
+   `catalog.wealth.macro_indicators`/`catalog.wealth.market_data` outside its
+   `portfolio_review` task binding) and the same disposition shape as local mode
+   (`COMPLETED WITH GOVERNANCE INTERVENTION`).

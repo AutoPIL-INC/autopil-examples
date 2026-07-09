@@ -80,10 +80,25 @@ def _register_agents() -> None:
         )
 
 
-_register_agents()
+# Hosted AutoPIL SaaS trial mode — opt in by setting both AUTOPIL_ADMIN_KEY and
+# AUTOPIL_EVALUATE_KEY (same explicit-opt-in pattern as the other 3 demos). Verified
+# live against a real trial tenant — see aml_saas_guard.py's module docstring for
+# what's confirmed, including a disclosed minor content difference for
+# compliance_officer_policy. Falls back to the embedded, local ContextGuard otherwise.
+_SAAS_MODE = bool(os.getenv("AUTOPIL_ADMIN_KEY")) and bool(os.getenv("AUTOPIL_EVALUATE_KEY"))
 
-guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
-                      agent_registry_store=AGENT_REGISTRY_STORE)
+if _SAAS_MODE:
+    from aml_saas_guard import RemoteContextGuard, bootstrap_agents
+    _API_URL = os.getenv("AUTOPIL_API_URL", "https://autopil-api.onrender.com")
+    AGENT_IDS.update(bootstrap_agents(
+        _API_URL, os.environ["AUTOPIL_ADMIN_KEY"], roles=list(AGENT_IDS),
+        owner_tag="autopil-langgraph-demos",
+    ))
+    guard = RemoteContextGuard(_API_URL, os.environ["AUTOPIL_EVALUATE_KEY"], os.environ["AUTOPIL_ADMIN_KEY"])
+else:
+    _register_agents()
+    guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
+                          agent_registry_store=AGENT_REGISTRY_STORE)
 
 
 def _make_llm(provider: str = ""):

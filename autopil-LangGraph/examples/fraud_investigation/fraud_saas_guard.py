@@ -2,6 +2,15 @@
 Hosted AutoPIL SaaS trial mode — a drop-in ContextGuard replacement that calls the
 real hosted API (POST /v1/context/evaluate) instead of evaluating policy locally.
 
+Named fraud_saas_guard.py, not the generic saas_guard.py this file started as —
+every demo with hosted-mode support had an identically-named saas_guard.py, which
+collided under langgraph dev exactly like this repo's other per-demo module-naming
+rule warns about (see root CLAUDE.md): whichever demo's graph loaded first "won,"
+and every other demo silently imported *that* demo's saas_guard.py instead of its
+own. Caught live when institutional_portfolio_review's saas_guard.py (the only copy
+with an ensure_policy() function) got shadowed by this file's copy, crashing the
+whole langgraph dev server with an ImportError on startup — not a subtle bug.
+
 Activated automatically when AUTOPIL_ADMIN_KEY and AUTOPIL_EVALUATE_KEY are both set
 (see fraud_investigation_demo.py's guard construction) — same explicit-opt-in pattern
 as client_analysis_demo.py's AWS_BEDROCK_MODEL_ID. Falls back to the embedded
@@ -26,7 +35,7 @@ Verified live against a real trial tenant (base_url https://autopil-api.onrender
     policy_name bound, which can silently bind to the wrong one. bootstrap_agents()
     below always pins policy_name explicitly rather than relying on that fallback.
     None of this demo's 5 roles are affected; client_analysis's wealth_advisor is
-    (see its own saas_guard.py copy).
+    (see its own client_analysis_saas_guard.py copy).
   - GET /v1/audit/sessions/{id} requires the Admin key — an Evaluate-scoped key gets
     403 Forbidden calling it, even though that same key works fine for
     POST /v1/context/evaluate. RemoteContextGuard below needs both keys for exactly

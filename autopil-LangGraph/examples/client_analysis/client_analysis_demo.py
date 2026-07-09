@@ -112,7 +112,7 @@ _SAAS_POLICY_NAMES = {
 }
 
 if _SAAS_MODE:
-    from saas_guard import RemoteContextGuard, bootstrap_agents
+    from client_analysis_saas_guard import RemoteContextGuard, bootstrap_agents
     _API_URL = os.getenv("AUTOPIL_API_URL", "https://autopil-api.onrender.com")
     # AGENT_IDS' local string values (e.g. "junior-analyst-001") aren't registered
     # anywhere on a hosted tenant. bootstrap_agents mints/reuses a real, approved agent
