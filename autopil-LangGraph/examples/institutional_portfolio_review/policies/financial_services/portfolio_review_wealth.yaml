@@ -1,0 +1,279 @@
+# Wealth-advisory side of the Institutional Portfolio Review demo's policy — adapted
+# from the real autopil/policies/financial_services/wealth.yaml. Source IDs use the
+# catalog.schema.table naming a real Unity Catalog deployment would produce (see
+# portfolio_review_uc_data.py and README.md's real-workspace appendix).
+#
+# NOTE: the real wealth.yaml also defines intake_agent_policy (application intake) and
+# require_principal_entitlements blocks on several policies below. Neither is ported
+# here — intake_agent isn't part of this demo's 11-role cast (it belongs to a different
+# onboarding demo that happens to share the same production policy file), and
+# require_principal_entitlements only evaluates against request.principal_claims, which
+# is set by the hosted REST API layer (app.py) — guard.protect()'s embedded decorator
+# (what this demo uses, like every demo in this repo) never sets it, so any such rule
+# would deny unconditionally via the SDK path. See DESIGN.md for the full explanation.
+industry: financial_services
+organization: Wealth
+process_group: institutional_portfolio_review
+
+regulations:
+  - id: INVESTMENT-ADVISERS-ACT
+    name: "Investment Advisers Act of 1940"
+    applicable_rules:
+      - rule: "Fiduciary duty — advisory access limited to client's own portfolio and profile"
+        how_enforced: "wealth_advisor_policy denied_sources blocks catalog.wealth.other_client_portfolios; task_bindings bind portfolio_review to portfolio_holdings and client_profile only"
+      - rule: "Orchestration isolation — orchestrator cannot access raw portfolio data"
+        how_enforced: "portfolio_orchestrator_policy denied_sources blocks portfolio_holdings and rebalancing_instructions; task_bindings restrict orchestration to client_profile and agent_outputs only"
+  - id: FINRA-2111
+    name: "FINRA Rule 2111 — Suitability"
+    applicable_rules:
+      - rule: "Recommendations based on client investment profile and risk tolerance only"
+        how_enforced: "wealth_advisor_policy task_bindings bind rebalancing_recommendation to portfolio_holdings, market_data, product_catalog; internal_pricing_models denied"
+  - id: REG-BI
+    name: "SEC Regulation Best Interest (Reg BI)"
+    applicable_rules:
+      - rule: "Best interest standard — trade execution denied to all advisory and analysis agents"
+        how_enforced: "wealth_advisor_policy, rebalancing_agent_policy, and macro_analyst_policy all list trade_execution in denied_tasks"
+  - id: FINRA-4511
+    name: "FINRA Rules 4511/4512 — Books and Records"
+    applicable_rules:
+      - rule: "Client report generation — tamper-evident audit trail required"
+        how_enforced: "report_generator_policy require_task_for_sensitivity: high; task_bindings restrict client_report to agent_outputs, research_reports, regulatory_templates; raw portfolio_holdings and client_profile denied"
+
+# kyc_agent_policy (with its KYC-FATF rule above) moved to
+# examples/aml_compliance/policies/financial_services/aml_compliance.yaml — see that
+# demo's DESIGN.md for the split rationale.
+
+policies:
+
+  # Portfolio orchestrator — routes reviews; reads client profile and agent outputs only
+  - name: portfolio_orchestrator_policy
+    description: "Orchestrates institutional reviews; routes to sub-agents; no raw portfolio data access"
+    agent_role: portfolio_orchestrator
+    allowed_sources:
+      - catalog.wealth.client_profile
+      - catalog.wealth.agent_outputs
+    denied_sources:
+      - catalog.wealth.portfolio_holdings
+      - catalog.wealth.other_client_portfolios
+      - catalog.wealth.rebalancing_instructions
+      - catalog.risk.credit_scores
+    allowed_tasks:
+      - portfolio_review
+      - agent_routing
+      - workflow_orchestration
+    denied_tasks:
+      - trade_execution
+      - credit_decision
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: portfolio_review
+        permitted_sources: [catalog.wealth.client_profile, catalog.wealth.agent_outputs]
+      - task: agent_routing
+        permitted_sources: [catalog.wealth.client_profile]
+      - task: workflow_orchestration
+        permitted_sources: [catalog.wealth.client_profile, catalog.wealth.agent_outputs]
+    session_ttl_minutes: 240
+    sensitivity_decay:
+      - after_minutes: 60
+        max_sensitivity: medium
+      - after_minutes: 120
+        max_sensitivity: low
+
+  # Wealth advisor — client portfolio and market data; blocked from other clients' data
+  - name: wealth_advisor_policy
+    description: "Client portfolio and market data for advisory; blocked from other clients and pricing models"
+    agent_role: wealth_advisor
+    allowed_sources:
+      - catalog.wealth.portfolio_holdings
+      - catalog.wealth.market_data
+      - catalog.wealth.client_profile
+      - catalog.wealth.product_catalog
+      - catalog.wealth.research_reports
+    denied_sources:
+      - catalog.wealth.other_client_portfolios
+      - catalog.wealth.internal_pricing_models
+      - catalog.wealth.executive_communications
+      - catalog.risk.credit_scores
+    allowed_tasks:
+      - portfolio_review
+      - rebalancing_recommendation
+      - product_pitch
+      - client_report
+    denied_tasks:
+      - trade_execution
+      - account_freeze
+      - credit_decision
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: portfolio_review
+        permitted_sources: [catalog.wealth.portfolio_holdings, catalog.wealth.client_profile]
+      - task: rebalancing_recommendation
+        permitted_sources: [catalog.wealth.portfolio_holdings, catalog.wealth.market_data, catalog.wealth.product_catalog]
+      - task: product_pitch
+        permitted_sources: [catalog.wealth.product_catalog, catalog.wealth.research_reports, catalog.wealth.client_profile]
+      - task: client_report
+        permitted_sources: [catalog.wealth.client_profile, catalog.wealth.portfolio_holdings, catalog.wealth.market_data, catalog.wealth.research_reports]
+    session_ttl_minutes: 240
+    sensitivity_decay:
+      - after_minutes: 60
+        max_sensitivity: medium
+      - after_minutes: 120
+        max_sensitivity: low
+
+  # Investment analyst — research and market data; no client PII
+  - name: investment_analyst_policy
+    description: "Research and market data analysis; no client PII or portfolio holdings access"
+    agent_role: investment_analyst
+    allowed_sources:
+      - catalog.wealth.market_data
+      - catalog.wealth.research_reports
+      - catalog.wealth.macro_indicators
+      - catalog.wealth.sec_filings
+      - catalog.wealth.economic_indicators
+      - catalog.wealth.other_client_portfolios
+    denied_sources:
+      - catalog.wealth.client_profile
+      - catalog.wealth.portfolio_holdings
+      - catalog.risk.credit_scores
+    allowed_tasks:
+      - market_analysis
+      - report_generation
+      - sector_review
+      - benchmarking
+    denied_tasks:
+      - trade_execution
+      - credit_decision
+      - product_recommendation
+    # critical, not medium — this role is the one genuinely authorized for
+    # other_client_portfolios (critical sensitivity) under the benchmarking task; a
+    # lower ceiling would silently block the one source this role exists to provide,
+    # contradicting its own allowed_sources/task_bindings below.
+    max_sensitivity: critical
+    task_bindings:
+      - task: market_analysis
+        permitted_sources: [catalog.wealth.market_data, catalog.wealth.macro_indicators, catalog.wealth.economic_indicators]
+      - task: report_generation
+        permitted_sources: [catalog.wealth.research_reports, catalog.wealth.market_data, catalog.wealth.sec_filings, catalog.wealth.economic_indicators]
+      - task: sector_review
+        permitted_sources: [catalog.wealth.market_data, catalog.wealth.research_reports, catalog.wealth.sec_filings]
+      - task: benchmarking
+        permitted_sources: [catalog.wealth.other_client_portfolios, catalog.wealth.market_data, catalog.wealth.research_reports]
+    session_ttl_minutes: 480
+
+  # Macro analyst — economic and regime analysis; no client portfolio or profile data
+  - name: macro_analyst_policy
+    description: "Macro and economic analysis; no client portfolio or profile data access"
+    agent_role: macro_analyst
+    allowed_sources:
+      - catalog.wealth.macro_indicators
+      - catalog.wealth.economic_indicators
+      - catalog.wealth.market_data
+      - catalog.wealth.research_reports
+      - catalog.wealth.geopolitical_signals
+    denied_sources:
+      - catalog.wealth.portfolio_holdings
+      - catalog.wealth.client_profile
+      - catalog.wealth.other_client_portfolios
+      - catalog.risk.credit_scores
+      - catalog.wealth.rebalancing_instructions
+    allowed_tasks:
+      - macro_analysis
+      - market_outlook
+      - regime_assessment
+      - scenario_modeling
+    denied_tasks:
+      - trade_execution
+      - credit_decision
+      - product_recommendation
+      - client_report
+    max_sensitivity: medium
+    task_bindings:
+      - task: macro_analysis
+        permitted_sources: [catalog.wealth.macro_indicators, catalog.wealth.economic_indicators, catalog.wealth.geopolitical_signals]
+      - task: market_outlook
+        permitted_sources: [catalog.wealth.market_data, catalog.wealth.macro_indicators, catalog.wealth.economic_indicators]
+      - task: regime_assessment
+        permitted_sources: [catalog.wealth.macro_indicators, catalog.wealth.geopolitical_signals, catalog.wealth.research_reports]
+      - task: scenario_modeling
+        permitted_sources: [catalog.wealth.macro_indicators, catalog.wealth.economic_indicators, catalog.wealth.market_data, catalog.wealth.geopolitical_signals]
+    session_ttl_minutes: 480
+
+  # Rebalancing agent — per-client rebalancing; scoped to assigned client
+  - name: rebalancing_agent_policy
+    description: "Per-client rebalancing analysis; scoped to assigned client, no cross-client access"
+    agent_role: rebalancing_agent
+    allowed_sources:
+      - catalog.wealth.portfolio_holdings
+      - catalog.wealth.rebalancing_instructions
+      - catalog.wealth.market_data
+      - catalog.wealth.product_catalog
+      - catalog.wealth.agent_outputs
+    denied_sources:
+      - catalog.wealth.other_client_portfolios
+      - catalog.wealth.client_profile
+      - catalog.risk.credit_scores
+      - catalog.wealth.macro_indicators
+    allowed_tasks:
+      - rebalancing_recommendation
+      - drift_analysis
+      - trade_proposal
+    denied_tasks:
+      - trade_execution
+      - credit_decision
+      - client_report
+      - cross_client_comparison
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: rebalancing_recommendation
+        permitted_sources: [catalog.wealth.portfolio_holdings, catalog.wealth.rebalancing_instructions, catalog.wealth.market_data, catalog.wealth.product_catalog]
+      - task: drift_analysis
+        permitted_sources: [catalog.wealth.portfolio_holdings, catalog.wealth.market_data]
+      - task: trade_proposal
+        permitted_sources: [catalog.wealth.portfolio_holdings, catalog.wealth.rebalancing_instructions, catalog.wealth.market_data, catalog.wealth.product_catalog]
+    session_ttl_minutes: 240
+    sensitivity_decay:
+      - after_minutes: 60
+        max_sensitivity: medium
+      - after_minutes: 120
+        max_sensitivity: low
+
+  # Report generator — compiles client reports from agent outputs only
+  - name: report_generator_policy
+    description: "Generates client reports from compiled agent outputs only; no raw portfolio data access"
+    agent_role: report_generator
+    allowed_sources:
+      - catalog.wealth.agent_outputs
+      - catalog.wealth.research_reports
+      - catalog.wealth.regulatory_templates
+    denied_sources:
+      - catalog.wealth.portfolio_holdings
+      - catalog.wealth.client_profile
+      - catalog.wealth.other_client_portfolios
+      - catalog.wealth.portfolio_metrics
+      - catalog.wealth.rebalancing_instructions
+    allowed_tasks:
+      - client_report
+      - portfolio_summary
+      - quarterly_review
+    denied_tasks:
+      - trade_execution
+      - cross_client_comparison
+      - rebalancing_recommendation
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: client_report
+        permitted_sources: [catalog.wealth.agent_outputs, catalog.wealth.research_reports, catalog.wealth.regulatory_templates]
+      - task: portfolio_summary
+        permitted_sources: [catalog.wealth.agent_outputs]
+      - task: quarterly_review
+        permitted_sources: [catalog.wealth.agent_outputs, catalog.wealth.research_reports, catalog.wealth.regulatory_templates]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: high
+      - after_minutes: 45
+        max_sensitivity: medium

@@ -1,0 +1,108 @@
+# Risk/compliance side of the Institutional Portfolio Review demo's policy — adapted
+# from the real autopil/policies/financial_services/risk_compliance.yaml, plus a new
+# settlement_agent_policy (the source demo's settlement_agent had tool functions but no
+# matching policy entry at all — every call it made would have been denied by default).
+#
+# NOTE: the real risk_compliance.yaml also defines compliance_agent_policy (a different
+# onboarding-workflow role that happens to share this file) and
+# require_principal_entitlements blocks. Neither is ported — see
+# portfolio_review_wealth.yaml's header and DESIGN.md for the full explanation of why
+# require_principal_entitlements doesn't work via the embedded SDK path this demo uses.
+industry: financial_services
+organization: Risk_Compliance
+process_group: institutional_portfolio_review
+
+regulations:
+  - id: SOX
+    name: "Sarbanes-Oxley Act — Sections 302 and 404"
+    applicable_rules:
+      - rule: "Tamper-evident audit records — no retroactive modification"
+        how_enforced: "cryptographic audit chain with SHA-256 chain hash on every event; append-only log enforced at DB layer"
+  - id: SR-11-7
+    name: "SR 11-7 — Model Risk Management Guidance (Federal Reserve / OCC)"
+    applicable_rules:
+      - rule: "Credit model validation access — stress testing and PD modeling scoped to model inputs"
+        how_enforced: "credit_risk_analyst_policy task_bindings bind stress_test to loan_history, credit_scores, portfolio_metrics, economic_indicators; pd_modeling to loan_history, credit_scores, delinquency_records; board_materials and executive_communications denied"
+  - id: SSAE-18
+    name: "SSAE 18 — Settlement and Custody Controls"
+    applicable_rules:
+      - rule: "Trade settlement scoped to confirmation and counterparty data only — no client PII"
+        how_enforced: "settlement_agent_policy allowed_sources restricted to trade_confirmations, counterparty_data; portfolio_holdings and client_profile denied"
+
+# aml_investigator_policy and compliance_officer_policy (with their BSA-AML/OFAC/SOX
+# rules above) moved to examples/aml_compliance/policies/financial_services/
+# aml_compliance.yaml — see that demo's DESIGN.md for the split rationale.
+
+policies:
+
+  # Credit risk analyst — portfolio metrics and economic data; no client PII
+  - name: credit_risk_analyst_policy
+    description: "Portfolio metrics and economic analysis; no client PII or board materials access"
+    agent_role: credit_risk_analyst
+    allowed_sources:
+      - catalog.risk.loan_history
+      - catalog.risk.credit_scores
+      - catalog.wealth.economic_indicators
+      - catalog.wealth.portfolio_metrics
+      - catalog.risk.delinquency_records
+    denied_sources:
+      - catalog.wealth.executive_communications
+      - catalog.risk.board_materials
+      - catalog.wealth.client_profile
+    allowed_tasks:
+      - stress_test
+      - pd_modeling
+      - limit_review
+      - risk_report
+    denied_tasks:
+      - credit_decision
+      - account_freeze
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: stress_test
+        permitted_sources: [catalog.risk.loan_history, catalog.risk.credit_scores, catalog.wealth.portfolio_metrics, catalog.wealth.economic_indicators]
+      - task: pd_modeling
+        permitted_sources: [catalog.risk.loan_history, catalog.risk.credit_scores, catalog.risk.delinquency_records]
+      - task: limit_review
+        permitted_sources: [catalog.risk.loan_history, catalog.risk.credit_scores, catalog.wealth.portfolio_metrics]
+      - task: risk_report
+        permitted_sources: [catalog.wealth.portfolio_metrics, catalog.risk.delinquency_records, catalog.wealth.economic_indicators]
+    session_ttl_minutes: 240
+    sensitivity_decay:
+      - after_minutes: 60
+        max_sensitivity: medium
+      - after_minutes: 120
+        max_sensitivity: low
+
+  # Settlement agent — NEW policy, not present in the source demo at all (it had tool
+  # functions calling guard.protect(agent_role="settlement_agent", ...) with no matching
+  # policy anywhere, so every call was denied by default). Scoped per README's stated
+  # intent: trade confirmations and counterparty data only, no client PII.
+  - name: settlement_agent_policy
+    description: "Trade settlement and counterparty verification; no client PII or portfolio holdings access"
+    agent_role: settlement_agent
+    allowed_sources:
+      - catalog.risk.trade_confirmations
+      - catalog.risk.counterparty_data
+    denied_sources:
+      - catalog.wealth.portfolio_holdings
+      - catalog.wealth.client_profile
+      - catalog.risk.credit_scores
+    allowed_tasks:
+      - trade_settlement
+      - counterparty_verification
+    denied_tasks:
+      - trade_execution
+      - credit_decision
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: trade_settlement
+        permitted_sources: [catalog.risk.trade_confirmations]
+      - task: counterparty_verification
+        permitted_sources: [catalog.risk.counterparty_data]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: medium
