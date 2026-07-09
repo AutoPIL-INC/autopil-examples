@@ -205,6 +205,36 @@ to load a graph pre-compiled with one — so the module-level `graph` has none, 
   reviewer overrides it in the live viewer (see "Human-in-the-loop review" above); the
   CLI always auto-approves, so proposed and final match there.
 
+## Hosted AutoPIL SaaS trial mode (optional)
+
+By default this demo runs entirely against the local embedded `ContextGuard` — no
+account needed. To run it against a real hosted AutoPIL trial instead:
+
+1. **Start a free trial** at [autopil.ai/trial](https://www.autopil.ai/trial).
+2. **Get your keys** — once signed up, go to **Settings** in the dashboard and
+   generate two API keys: one with **Admin** scope (used once, to register and
+   approve this demo's agents) and one with **Evaluate** scope (used on every
+   runtime decision call).
+3. **Set both in `.env`** (see `.env.example`) — every run then automatically
+   switches to calling the real hosted API instead of the local one:
+
+```bash
+AUTOPIL_ADMIN_KEY=your-admin-key-here
+AUTOPIL_EVALUATE_KEY=your-evaluate-key-here
+# AUTOPIL_API_URL=https://autopil-api.onrender.com   # override if your trial lives elsewhere
+```
+
+On first run, `bootstrap_agents()` (in `saas_guard.py`) registers and approves one
+agent per role on your tenant, explicitly bound to the matching policy — idempotent,
+so re-running (or `langgraph dev`'s hot-reload) reuses the same agents rather than
+creating new ones each time. Everything else about the demo — the CLI, the live
+viewer, the 5 cases — works identically either way; only where the actual
+allow/deny decision comes from changes. See DESIGN.md's "Appendix: hosted trial mode"
+for what's verified to work identically and one disclosed gap (`permitted_agent_ids`/
+`sensitivity_decay` aren't enforceable the same way against the hosted API).
+
+Unset either key (or leave both out of `.env`) to go back to local mode.
+
 ## Files
 
 | File | What it is |
@@ -213,6 +243,7 @@ to load a graph pre-compiled with one — so the module-level `graph` has none, 
 | `simulated_data.py` | Fixture data — 7 accounts, 72 transactions, 5 fraud alerts, KYC records. CASE-001/002/003 cover structuring, account takeover, and synthetic identity; CASE-004 (elder financial exploitation) and CASE-005 (money mule / check kiting) were added later |
 | `policies/financial_services/fraud_investigation.yaml` | The 5-role AutoPIL policy matrix — see the file header for a fix that had to land upstream in `autopil` (`task_type` support on `protect()`) before `require_task_for_sensitivity` could work through the SDK path |
 | `fraud_investigation_demo.py` | The demo itself |
+| `saas_guard.py` | Optional hosted-SaaS-trial guard + agent bootstrap — see "Hosted AutoPIL SaaS trial mode" above |
 | `../../langgraph.json` | Exposes `fraud_investigation_demo.py:graph` to `langgraph dev` for the live viewer |
 | `frontend/` | Vite + React + TypeScript live audit-trail feed, model selector, and compliance-review panel, via `@langchain/langgraph-sdk` |
 

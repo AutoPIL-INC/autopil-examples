@@ -3,6 +3,7 @@ import { useStream } from "@langchain/langgraph-sdk/react";
 import {
   CASE_IDS,
   CASE_INFO,
+  CASE_ALERTS,
   OVERRIDE_ACTIONS,
   PROVIDERS,
   initialInput,
@@ -12,6 +13,10 @@ import {
 } from "./types";
 
 const API_URL = "http://localhost:2024";
+
+function formatOpenedDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
 
 function ToolCallRow({ event }: { event: FeedEvent & { type: "tool_call" } }) {
   const denied = event.status === "denied";
@@ -139,6 +144,7 @@ function CaseCard({
   onRun: () => void;
 }) {
   const info = CASE_INFO[caseId];
+  const alert = CASE_ALERTS[caseId];
   return (
     <button
       className={`case-card ${active ? "active" : ""}`}
@@ -149,9 +155,13 @@ function CaseCard({
         <span className="case-card-id">{caseId}</span>
         <span className="case-card-time">{info.estimatedTime}</span>
       </div>
-      <div className="case-card-title">{info.title}</div>
-      <div className="case-card-description">{info.description}</div>
-      <div className="case-card-cta">{active ? "Running…" : "Run this case"}</div>
+      <div className="case-card-body">
+        <div className="case-card-meta">
+          Opened {formatOpenedDate(alert.triggeredAt)} · Priority: {alert.priority} · Flagged by: {alert.ruleName}
+        </div>
+        <div className="case-card-description">{alert.description}</div>
+      </div>
+      <div className="case-card-cta">{active ? "Investigating…" : "Pull from queue"}</div>
     </button>
   );
 }
@@ -254,8 +264,8 @@ export default function ExecutionTab() {
         {stream.isLoading && <span className="running-indicator">running…</span>}
       </div>
 
-      <div className="section-title">Cases</div>
-      <div className="case-grid">
+      <div className="section-title">Case Queue</div>
+      <div className="case-queue">
         {CASE_IDS.map((caseId) => (
           <CaseCard
             key={caseId}
@@ -278,7 +288,7 @@ export default function ExecutionTab() {
       <div className="section-title">Live audit trail</div>
       <div className="feed table-card">
         {feed.length === 0 && !stream.isLoading && (
-          <p className="feed-empty">Pick a case above to start a live run.</p>
+          <p className="feed-empty">Pull a case from the queue above to start the investigation.</p>
         )}
         {feed.map((event, i) => <FeedItem key={i} event={event} />)}
         {awaitingReview && (

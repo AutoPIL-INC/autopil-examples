@@ -1,5 +1,5 @@
 import { AGENT_POLICIES, REGULATIONS, type AgentPolicy } from "./policyData";
-import { REQUEST_IDS, REQUEST_INFO } from "./types";
+import { CUSTOMER_IDS, CLIENT_REVIEWS } from "./types";
 
 function PolicyCard({ policy }: { policy: AgentPolicy }) {
   return (
@@ -50,48 +50,59 @@ export default function DescriptionTab() {
           actually decides what each role can reach, at retrieval time.
         </p>
         <p>
-          An orchestrator reads a natural-language business request and decides which
-          role should handle it and what task/purpose it falls under — that's a real
-          model decision, not a lookup table. When a denial happens on the Execution
-          tab, it's because the assigned role reasoned its way toward a source its task
-          doesn't cover, exercising one of four distinct enforcement paths:{" "}
-          <code>denied_sources</code>, <code>denied_tasks</code>,{" "}
-          <code>task_bindings</code> purpose limitation, or the sensitivity ceiling.
+          Every customer review starts at junior_analyst. That tier gathers data with
+          its own tool-calling loop, proposes a concrete next action for the client, and
+          a human reviewer decides: approve it, override it with a different action, or
+          escalate the case to the next tier for a second look — senior_analyst, then
+          wealth_advisor. When a denial happens on the Execution tab, it's because a
+          tier reasoned its way toward a source its task doesn't cover, exercising one
+          of four distinct enforcement paths: <code>denied_sources</code>,{" "}
+          <code>denied_tasks</code>, <code>task_bindings</code> purpose limitation, or
+          the sensitivity ceiling.
         </p>
       </section>
 
       <section className="desc-section">
-        <h2>Orchestration flow</h2>
+        <h2>Escalation flow</h2>
         <div className="flow-diagram">
           <div className="flow-box flow-orchestrator">
-            <div className="flow-box-title">Governance Orchestrator</div>
-            <div className="flow-box-sub">Reads the request, assigns a role and a task_type — the purpose the request falls under.</div>
+            <div className="flow-box-title">Intake</div>
+            <div className="flow-box-sub">Looks up the customer's review reason — every case starts at junior_analyst.</div>
           </div>
           <div className="flow-arrow-down" />
-          <div className="flow-branch-label">assigned to exactly one of the three roles</div>
-          <div className="flow-row">
-            <div className="flow-box flow-specialist">
-              <div className="flow-box-title">{junior.displayName}</div>
-              <div className="flow-box-sub">{junior.description}</div>
-            </div>
-            <div className="flow-box flow-specialist">
-              <div className="flow-box-title">{senior.displayName}</div>
-              <div className="flow-box-sub">{senior.description}</div>
-            </div>
-            <div className="flow-box flow-specialist">
-              <div className="flow-box-title">{wealth.displayName}</div>
-              <div className="flow-box-sub">{wealth.description}</div>
-            </div>
+          <div className="flow-box flow-specialist">
+            <div className="flow-box-title">{junior.displayName}</div>
+            <div className="flow-box-sub">{junior.description}</div>
           </div>
           <div className="flow-arrow-down" />
           <div className="flow-box flow-review">
-            <div className="flow-box-title">Orchestrator Review</div>
-            <div className="flow-box-sub">If the assigned role was blocked, decide whether to escalate to senior_analyst (one attempt) or accept the outcome as final.</div>
+            <div className="flow-box-title">Human Review — Junior Tier</div>
+            <div className="flow-box-sub">Approve the proposed action, override it, or escalate to senior_analyst.</div>
+          </div>
+          <div className="flow-branch-label">escalate</div>
+          <div className="flow-box flow-specialist">
+            <div className="flow-box-title">{senior.displayName}</div>
+            <div className="flow-box-sub">{senior.description}</div>
+          </div>
+          <div className="flow-arrow-down" />
+          <div className="flow-box flow-review">
+            <div className="flow-box-title">Human Review — Senior Tier</div>
+            <div className="flow-box-sub">Approve, override, or escalate to wealth_advisor.</div>
+          </div>
+          <div className="flow-branch-label">escalate</div>
+          <div className="flow-box flow-specialist">
+            <div className="flow-box-title">{wealth.displayName}</div>
+            <div className="flow-box-sub">{wealth.description}</div>
+          </div>
+          <div className="flow-arrow-down" />
+          <div className="flow-box flow-review">
+            <div className="flow-box-title">Human Review — Wealth Advisor Tier</div>
+            <div className="flow-box-sub">Top of the chain — approve or override only, nothing left to escalate to.</div>
           </div>
           <div className="flow-arrow-down" />
           <div className="flow-box flow-decision">
-            <div className="flow-box-title">Outcome Classification</div>
-            <div className="flow-box-sub">Grounded in the real audit trail, not the model's self-report alone — completed, completed-with-intervention, or blocked.</div>
+            <div className="flow-box-title">Disposition</div>
+            <div className="flow-box-sub">Records which tier closed the case, the full path of tiers visited, and every human decision along the way.</div>
           </div>
         </div>
       </section>
@@ -123,18 +134,24 @@ export default function DescriptionTab() {
       </section>
 
       <section className="desc-section">
-        <h2>The 3 requests</h2>
+        <h2>The 5 customers</h2>
+        <p>
+          Mixed complexity by design — some close at junior_analyst, some escalate
+          once, one can reach all the way to wealth_advisor. Which tiers a case
+          actually visits depends on what each tier's own finding recommends and what
+          the human reviewer decides at each step — not guaranteed on every run, same
+          disclosure as the fraud investigation demo's own cases.
+        </p>
         <div className="case-grid">
-          {REQUEST_IDS.map((requestId) => {
-            const info = REQUEST_INFO[requestId];
+          {CUSTOMER_IDS.map((customerId) => {
+            const review = CLIENT_REVIEWS[customerId];
             return (
-              <div key={requestId} className="case-card case-card-static">
+              <div key={customerId} className="case-card case-card-static">
                 <div className="case-card-top">
-                  <span className="case-card-id">{requestId}</span>
-                  <span className="case-card-time">{info.estimatedTime}</span>
+                  <span className="case-card-id">{customerId}</span>
+                  <span className="case-card-time">Priority: {review.priority}</span>
                 </div>
-                <div className="case-card-title">{info.title}</div>
-                <div className="case-card-description">{info.description}</div>
+                <div className="case-card-description">{review.reasonForReview}</div>
               </div>
             );
           })}

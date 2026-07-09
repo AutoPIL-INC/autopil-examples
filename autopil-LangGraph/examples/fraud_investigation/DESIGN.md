@@ -263,37 +263,73 @@ Verified behaviors, live:
   source `sar_generator` **is** authorized for — confirming isolation is enforced
   independently of the source policy check, not a relabeled policy denial.
 
-## Appendix: hosted trial mode (deferred, not this round)
+## Appendix: hosted trial mode
 
-Considered running this demo against the hosted AutoPIL trial (real tenant, real admin
-key) instead of local embedded `ContextGuard`. Decided against it for now — local mode
-keeps iteration fast and isolates "does the reasoning-driven design work" from "does the
-trial onboarding flow work." Revisit once the demo itself is proven.
+Implemented — see `saas_guard.py` and the "Hosted AutoPIL SaaS trial mode" section in
+`fraud_investigation_demo.py`. Originally deferred (local mode kept iteration fast
+while the reasoning-driven design itself was being proven); revisited once that held
+up across many live runs. See README.md's own "Hosted AutoPIL SaaS trial mode" section
+for how to get a trial account and Admin/Evaluate keys — this appendix covers what was
+verified, not setup steps.
 
-If/when this is revisited, note what's actually required — confirmed against the live
-code, not assumed:
+**How it's wired**: `RemoteContextGuard` (`saas_guard.py`) implements the exact same
+`.protect()`/`.get_audit_trail()` surface as the embedded `autopil.ContextGuard`, but
+backed by `POST /v1/context/evaluate` over HTTP instead of local policy evaluation.
+`fraud_investigation_demo.py` picks whichever one to construct based on whether
+`AUTOPIL_ADMIN_KEY` and `AUTOPIL_EVALUATE_KEY` are both set (same explicit-opt-in
+pattern as `client_analysis_demo.py`'s `AWS_BEDROCK_MODEL_ID`) — nothing else in the
+file (`_make_getter`, `_build_tool`, every node) needed to change, which was the whole
+point of matching the local guard's interface exactly.
 
-1. **Provision a tenant** — `POST /v1/admin/tenants` (or `POST /v1/admin/trial/provision`,
-   which also mints a separate `evaluate`-scoped agent key in the same call — the more
-   realistic "new trial tenant" path).
-2. **Create the 5 policies via REST** — `POST /v1/policies` once per role. This is real
-   JSON `CreatePolicyRequest`, not a YAML upload — the existing `fraud_investigation.yaml`
-   would need to be translated into 5 request bodies.
-3. **Register the 5 agents** — `POST /v1/agents`, each bound via `policy_name`.
-4. **Every guarded retrieval becomes a raw HTTP call** — `ContextGuard.protect()` is
-   embedded-only in Python (always talks to a local SQLite/Postgres file directly; no
-   `base_url`/remote mode — Go/TypeScript/Java have hosted SDKs, Python doesn't). Hosted
-   mode means replacing every `@guard.protect(...)` call site with
-   `POST /v1/context/evaluate` + `X-API-Key: <agent_key>`, which would need a small
-   wrapper to avoid repetitive HTTP boilerplate at every tool call.
+**Verified live against a real trial tenant** (`https://autopil-api.onrender.com`,
+2026-07-09), not assumed from the API docs:
 
-Two product findings surfaced while checking this, worth tracking independent of the demo:
+1. **`agent_id` is unconditionally required on every evaluate call** — stricter than
+   the embedded SDK, which makes it optional depending on the policy. An unregistered
+   or unapproved `agent_id` is denied before policy ever runs
+   (`denial_type: "identity"`), so every one of this demo's 5 roles needs a real,
+   approved agent on the hosted tenant — not just a string, the way `AGENT_IDS`' local
+   values are.
+2. **Agents start `draft`** and must be explicitly approved
+   (`PATCH /v1/agents/{id}/status`) before they can evaluate anything.
+   `bootstrap_agents()` handles both registration and approval, and is idempotent —
+   it looks up existing agents (filtered by `framework=langgraph` +
+   `owner=autopil-langgraph-demos`) before creating new ones, so repeated imports
+   (including `langgraph dev`'s hot-reload) don't pile up duplicate agents.
+3. **This tenant's pre-seeded `financial_services` policies already matched
+   `fraud_investigation.yaml` byte-for-byte** for all 5 roles (`allowed_sources`/
+   `denied_sources`/`allowed_tasks`/`denied_tasks`/`max_sensitivity`/`task_bindings`,
+   diffed directly against `GET /v1/policies`) — no policy translation was needed for
+   this demo specifically.
+4. **A live full-case run** (CASE-001, all 5 roles, via Ollama) produced the same
+   shape of outcome as local mode: real `ALLOW`/`DENY` decisions matching the policy,
+   and — notably — the role-spoofing scenario (`sar_generator` claiming
+   `agent_role="kyc_specialist"` while using its own real `agent_id`) was denied
+   identically to local mode: `"Agent '<uuid>' is not permitted to act as
+   'kyc_specialist' — permitted: ['sar_generator']"`. The hosted agent registry
+   enforces the same claimed-role-vs-registered-role check as the embedded one.
+5. **Known gap, disclosed rather than silently claimed as at-parity**: the hosted
+   policy schema (`GET`/`POST /v1/policies`) has no `permitted_agent_ids` or
+   `sensitivity_decay` field. `transaction_analyst_policy`'s local
+   `permitted_agent_ids` restriction is therefore not enforceable the same way against
+   this hosted API version.
+6. **A real naming collision exists on a shared trial tenant that this demo avoids by
+   construction**: some `agent_role` values (`wealth_advisor`, `risk_agent`,
+   `compliance_agent` — none of which this demo uses) have *two* policies registered
+   against them. The evaluate endpoint falls back to a role-scan when an agent has no
+   explicit `policy_name` bound, which can silently bind to the wrong one of the two.
+   `bootstrap_agents()` always pins `policy_name` explicitly rather than relying on
+   that fallback — this is also the fix for the pre-existing product gap noted below
+   (a typo'd `policy_name` would otherwise silently fall back to role-scan too).
 
-- The **saas app doesn't enforce the "policy_name must resolve" 422 check** that the
-  single-tenant core app does (`packages/core/autopil/api/app.py` vs.
-  `packages/saas/autopil_saas/api/app.py`) — registering an agent with a typo'd
-  `policy_name` on the hosted trial silently stores `policy_id=None` and falls back to
-  role-scan instead of erroring.
-- **No first-party Python HTTP client** exists for the hosted API — only Go/TS/Java SDKs
-  do. If Python/LangGraph shops are a target trial segment, that's a gap independent of
-  this demo.
+Two product findings surfaced while building this, worth tracking independent of the
+demo:
+
+- The **saas app doesn't enforce a "`policy_name` must resolve" 4xx check** the way a
+  single-tenant deployment might — registering an agent with a typo'd `policy_name` on
+  the hosted trial silently stores `policy_id=None` and falls back to role-scan
+  instead of erroring. Mitigated in this demo by always using policy names confirmed
+  to exist first (see point 3 above), not by any fix on the API side.
+- **No first-party Python HTTP client** exists for the hosted API — only Go/TS/Java
+  SDKs do; `saas_guard.py`'s `RemoteContextGuard` is this demo's own minimal one,
+  built on `httpx`, not a general-purpose SDK.

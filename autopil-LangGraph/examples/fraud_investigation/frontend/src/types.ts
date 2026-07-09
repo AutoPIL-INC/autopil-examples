@@ -103,6 +103,10 @@ export const OVERRIDE_ACTIONS = [
 
 export const CASE_IDS = ["CASE-001", "CASE-002", "CASE-003", "CASE-004", "CASE-005"] as const;
 
+// Spoiler-bearing reference copy — fine for the Description tab (a read-only "how this
+// works" page), but never shown on the Execution tab's case queue (see CASE_ALERTS
+// below) since naming the pattern before the agents investigate gives away the answer
+// the investigation is supposed to work out.
 // See simulated_data.py's module docstring for the underlying fixture data.
 export const CASE_INFO: Record<(typeof CASE_IDS)[number], { title: string; description: string; estimatedTime: string }> = {
   "CASE-001": {
@@ -129,6 +133,57 @@ export const CASE_INFO: Record<(typeof CASE_IDS)[number], { title: string; descr
     title: "Money mule / check kiting",
     description: "Third-party checks from unrelated remitters, each withdrawn before the hold would release.",
     estimatedTime: "~1–2 min",
+  },
+};
+
+// Mirrors simulated_data.py's FRAUD_ALERTS — kept in sync by hand, same "adapted from
+// the real backend data" pattern as policyData.ts. Deliberately excludes `alert_type`
+// — that's the fraud category, i.e. the answer the investigation is supposed to work
+// out, not something a real analyst would see on the ticket before opening the case.
+// This is what the Execution tab's case queue actually shows.
+export interface CaseAlert {
+  alertId: string;
+  accountId: string;
+  triggeredAt: string;
+  ruleName: string;
+  description: string;
+  priority: string;
+}
+
+export const CASE_ALERTS: Record<(typeof CASE_IDS)[number], CaseAlert> = {
+  "CASE-001": {
+    alertId: "ALERT-001", accountId: "ACC_8821", triggeredAt: "2026-03-29T14:22:00Z",
+    ruleName: "CTR_AVOIDANCE_PATTERN",
+    description: "12 cash deposits in 8 days, all between $9,100-$9,800. Cumulative total $112,500. Single outbound wire $87,400 to BVI entity immediately follows deposit pattern.",
+    priority: "HIGH",
+  },
+  "CASE-002": {
+    alertId: "ALERT-002", accountId: "ACC_3347", triggeredAt: "2026-03-29T16:47:00Z",
+    ruleName: "GEO_VELOCITY_ANOMALY",
+    description: "Austin TX → Miami FL → New York NY in 97 minutes. All three transactions from unrecognized device DEV_NEW_9921. $16,100 total debits in 4-hour window vs. $380 prior daily average.",
+    priority: "CRITICAL",
+  },
+  "CASE-003": {
+    alertId: "ALERT-003", accountId: "ACC_5590", triggeredAt: "2026-03-30T09:15:00Z",
+    ruleName: "BUST_OUT_PATTERN",
+    description: "Account opened 38 days ago. Minimal opening activity, then $25,100 in purchases over 20 days across mass retailers. NSF returned today. SSN matches prior declined application under different name.",
+    priority: "HIGH",
+  },
+  "CASE-004": {
+    alertId: "ALERT-004", accountId: "ACC_6634", triggeredAt: "2026-03-28T11:05:00Z",
+    ruleName: "AUTHORIZED_SIGNER_FUND_DIVERSION",
+    description: "New authorized signer added 2026-03-17 to a 25-year, historically low-activity retirement account. $34,500 in transfers to that signer's personal account over the following 11 days — no comparable activity anywhere in the account's prior history.",
+    priority: "HIGH",
+  },
+  "CASE-005": {
+    alertId: "ALERT-005", accountId: "ACC_7743", triggeredAt: "2026-03-27T15:30:00Z",
+    ruleName: "RAPID_CHECK_DEPOSIT_WITHDRAWAL",
+    // Trimmed one clause vs. the real alert text ("...Classic money-mule / check-kiting
+    // signature.") — the real data names the pattern outright there, which would defeat
+    // the point on the one screen meant to withhold it. Full text still appears verbatim
+    // via the live feed once the agents actually pull this alert.
+    description: "Five third-party check deposits totaling $42,000 over 7 days, each from a different, unrelated remitter, followed same-day by withdrawal before standard hold periods release.",
+    priority: "HIGH",
   },
 };
 

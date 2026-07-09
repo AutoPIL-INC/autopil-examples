@@ -9,12 +9,13 @@ policies/financial_services/client_analysis.yaml. "You don't give each role a
 different tool set. You give every agent the same tools and let policy control what
 succeeds." — that's the whole point of this demo.
 
-An orchestrator reads a natural-language client-analysis request, decides which role
-should handle it and what task/purpose it falls under, then that role's agent tries to
-fulfill it with a real tool-calling loop. Denials aren't scripted — they happen when
-the model reasons its way toward a source its assigned task doesn't cover, exercising
-four distinct AutoPIL enforcement paths: denied_sources, denied_tasks, task_bindings
-(purpose limitation), and the sensitivity ceiling.
+Every customer review starts at junior_analyst and can progressively escalate to
+senior_analyst and then wealth_advisor — a human reviews and dispositions each tier's
+proposed next-best-action before the case closes or moves up. Each tier's agent tries
+to fulfill its task with a real tool-calling loop. Denials aren't scripted — they
+happen when the model reasons its way toward a source its assigned task doesn't cover,
+exercising four distinct AutoPIL enforcement paths: denied_sources, denied_tasks,
+task_bindings (purpose limitation), and the sensitivity ceiling.
 
 See DESIGN.md for the full design rationale.
 
@@ -24,6 +25,7 @@ Run:
 
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -41,8 +43,10 @@ from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command, interrupt
 
 from autopil import ContextGuard, SensitivityLevel
 from autopil.db.sqlite import SQLiteAgentRegistryStore
@@ -59,11 +63,17 @@ MAX_TOOL_TURNS = 5   # per-role tool-calling loop cap
 ROLES = ["junior_analyst", "senior_analyst", "wealth_advisor"]
 TASK_TYPES = ["market_research", "portfolio_review", "client_reporting", "credit_analysis",
               "risk_assessment", "wealth_planning"]
+# Tier order and what each tier escalates to — None means "top of the chain."
+NEXT_TIER = {"junior_analyst": "senior_analyst", "senior_analyst": "wealth_advisor", "wealth_advisor": None}
+# A case's `tier_tasks` (simulated_uc_data.CLIENT_REVIEWS) only defines a task for the
+# tiers it's designed to reach. The human reviewer can still escalate any case past
+# that, though — these are the task each tier falls back to in that situation.
+DEFAULT_TIER_TASK = {"junior_analyst": "portfolio_review", "senior_analyst": "portfolio_review",
+                      "wealth_advisor": "wealth_planning"}
 
 AGENT_REGISTRY_STORE = SQLiteAgentRegistryStore(str(AUDIT_DB))
 
 AGENT_IDS = {
-    "governance_orchestrator": "governance-orchestrator-001",
     "junior_analyst": "junior-analyst-001",
     "senior_analyst": "senior-analyst-001",
     "wealth_advisor": "wealth-advisor-001",
@@ -83,25 +93,50 @@ def _register_agents() -> None:
         )
 
 
-_register_agents()
+# Hosted AutoPIL SaaS trial mode — opt in by setting both AUTOPIL_ADMIN_KEY and
+# AUTOPIL_EVALUATE_KEY (same explicit-opt-in pattern as this file's own
+# AWS_BEDROCK_MODEL_ID, and as fraud_investigation_demo.py). Verified live against a
+# real trial tenant — see saas_guard.py's module docstring. Falls back to the
+# embedded, local ContextGuard otherwise.
+_SAAS_MODE = bool(os.getenv("AUTOPIL_ADMIN_KEY")) and bool(os.getenv("AUTOPIL_EVALUATE_KEY"))
 
-guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
-                      agent_registry_store=AGENT_REGISTRY_STORE)
+# wealth_advisor needs an explicit pin: this tenant has TWO policies with
+# agent_role="wealth_advisor" ("demo_wealth_advisor_policy", which matches this
+# demo's local policy, and an unrelated "wealth_advisor_policy") — relying on the
+# evaluate endpoint's role-scan fallback would risk silently binding to the wrong
+# one. junior_analyst/senior_analyst have no such collision.
+_SAAS_POLICY_NAMES = {
+    "junior_analyst": "junior_analyst_policy",
+    "senior_analyst": "senior_analyst_policy",
+    "wealth_advisor": "demo_wealth_advisor_policy",
+}
 
-# Providers that support forcing a specific tool via tool_choice=<name>. Bedrock only
-# supports it for some underlying models (verified: Anthropic-on-Bedrock does, a Llama
-# Bedrock model raises ValueError at bind_tools() time) — same class of problem as
-# Ollama's silent ignore, different failure mode (raises instead of no-ops), so it gets
-# the same defensive fallback via _bind_forced() below rather than an assumption either
-# way.
-_ALWAYS_SUPPORTS_FORCED_CHOICE = {"anthropic", "gemini", "groq"}
+if _SAAS_MODE:
+    from saas_guard import RemoteContextGuard, bootstrap_agents
+    _API_URL = os.getenv("AUTOPIL_API_URL", "https://autopil-api.onrender.com")
+    # AGENT_IDS' local string values (e.g. "junior-analyst-001") aren't registered
+    # anywhere on a hosted tenant. bootstrap_agents mints/reuses a real, approved agent
+    # per role there and swaps in its real agent_id, so every downstream
+    # _make_getter()/_build_tool() call below (unchanged) carries an id the hosted API
+    # actually recognizes.
+    AGENT_IDS.update(bootstrap_agents(
+        _API_URL, os.environ["AUTOPIL_ADMIN_KEY"], roles=list(AGENT_IDS),
+        owner_tag="autopil-langgraph-demos",
+        policy_name_for=lambda role: _SAAS_POLICY_NAMES[role],
+        owner_team="Wealth Team",
+    ))
+    guard = RemoteContextGuard(_API_URL, os.environ["AUTOPIL_EVALUATE_KEY"], os.environ["AUTOPIL_ADMIN_KEY"])
+else:
+    _register_agents()
+    guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
+                          agent_registry_store=AGENT_REGISTRY_STORE)
 
 
 def _make_llm(provider: str = ""):
     """Build the LLM for a run. provider is "bedrock", "anthropic", "gemini", "groq",
     "ollama", or "" (auto: first of the five with credentials configured, Ollama last
     since it needs no key) — the live viewer's model dropdown sets this explicitly per
-    run via GovernanceState["provider"]; the CLI leaves it on auto.
+    run via ClientReviewState["provider"]; the CLI leaves it on auto.
 
     AWS_BEDROCK_MODEL_ID (not ambient AWS credential sniffing) is the explicit opt-in
     signal for Bedrock — consistent with every other provider's presence check, and
@@ -141,18 +176,6 @@ def _make_llm(provider: str = ""):
         # calls entirely).
         return ChatOllama(model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"))
     raise ValueError(f"Unknown provider: {provider!r}")
-
-
-def _bind_forced(llm, tools: list, tool_name: str):
-    """Bind tools, forcing a specific tool call when the provider supports it, falling
-    back to unforced binding otherwise. Ollama ignores tool_choice silently; some
-    non-Anthropic Bedrock models raise ValueError at bind time instead — both are
-    handled by the same fallback, and callers still need the `if response.tool_calls`
-    guard below either way."""
-    try:
-        return llm.bind_tools(tools, tool_choice=tool_name)
-    except ValueError:
-        return llm.bind_tools(tools)
 
 
 # Each role gets its own session — the isolation boundary AutoPIL enforces.
@@ -259,17 +282,28 @@ def _build_tool(name: str, description: str, agent_role: str, source_id: str,
 
 # ── shared tool-calling loop ──────────────────────────────────────────────────────
 
+CLIENT_ACTIONS = [
+    "NO ACTION NEEDED — CLIENT IN GOOD STANDING",
+    "SEND MARKET UPDATE / RESEARCH TO CLIENT",
+    "SCHEDULE PORTFOLIO REVIEW CALL",
+    "RECOMMEND PORTFOLIO REBALANCING",
+    "SCHEDULE WEALTH PLANNING MEETING",
+    "ESCALATE FOR CREDIT REVIEW",
+    "FLAG FOR COMPLIANCE / RISK REVIEW",
+]
+
 _FINDING_TOOL_SCHEMA = {
     "name": "submit_finding",
-    "description": "Submit your final response to the business request and end your turn. Call this once you're done gathering data (or once you've determined you can't complete it with the sources available to you).",
+    "description": "Submit your recommended next action for this client and end your turn. Call this once you're done gathering data (or once you've determined you can't gather what you need with the sources available to you).",
     "input_schema": {
         "type": "object",
         "properties": {
-            "summary": {"type": "string", "description": "1-3 sentence summary of what you produced (or why you couldn't)"},
-            "outcome": {"type": "string", "enum": ["COMPLETED", "BLOCKED"], "description": "COMPLETED if you produced the requested output using only sources that succeeded; BLOCKED if denials left you unable to complete it"},
+            "summary": {"type": "string", "description": "1-3 sentence summary of what you found and why you're recommending this action"},
+            "proposed_action": {"type": "string", "enum": CLIENT_ACTIONS, "description": "the concrete next action you recommend for this client"},
+            "recommend_escalation": {"type": "boolean", "description": "true if this case needs a broader-access role's review before acting on it"},
             "sources_used": {"type": "array", "items": {"type": "string"}, "description": "sources you actually got data back from"},
         },
-        "required": ["summary", "outcome"],
+        "required": ["summary", "proposed_action", "recommend_escalation"],
     },
 }
 
@@ -335,17 +369,17 @@ def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
 
 # ── LangGraph state ──────────────────────────────────────────────────────────────
 
-class GovernanceState(TypedDict):
-    request_id: str
+class ClientReviewState(TypedDict):
+    customer_id: str
     provider: str
-    brief: str
-    assigned_role: str
-    task_type: str
-    roles_attempted: list[str]
-    escalated: bool
-    finding: dict
+    reason_for_review: str
+    current_tier: str
+    tiers_visited: list[str]
+    findings: dict
+    human_decisions: dict
     denial_log: list[DenialEvent]
-    final_decision: str
+    final_action: str
+    closed_at_tier: str
 
 
 # ── denial classification — grounded in AutoPIL's actual reason strings ──────────
@@ -364,211 +398,194 @@ def _classify_denial(reason: str) -> str:
     return "policy"
 
 
-# ── orchestrator ──────────────────────────────────────────────────────────────────
+# ── intake ────────────────────────────────────────────────────────────────────────
 
-def orchestrator_node(state: GovernanceState) -> dict:
+def intake_node(state: ClientReviewState) -> dict:
+    """Every case starts at junior_analyst — no LLM classification needed, since
+    which task a tier works on is pre-designed per case (CLIENT_REVIEWS.tier_tasks).
+    Looked up server-side from customer_id, same as the fraud demo's orchestrator_node
+    fetches the alert from case_id — the client only ever needs to send customer_id."""
     _reset_sessions()
-    print(f"\n{'─'*70}\n  GOVERNANCE ORCHESTRATOR  (session: {SESSIONS['orchestrator'][:8]}…)\n{'─'*70}")
-    # Looked up server-side from request_id, same as the fraud demo's orchestrator_node
-    # fetches the alert from case_id — the client only ever needs to send request_id.
-    brief = ucdata.GOVERNANCE_REQUESTS[state["request_id"]]["brief"]
-    print(f"  Request: {brief}")
-
-    assign_schema = {
-        "name": "assign_request",
-        "description": "Decide which role should handle this business request, and what task/purpose it falls under.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "role": {"type": "string", "enum": ROLES},
-                "task_type": {"type": "string", "enum": TASK_TYPES},
-                "reasoning": {"type": "string"},
-            },
-            "required": ["role", "task_type"],
-        },
+    review = ucdata.CLIENT_REVIEWS[state["customer_id"]]
+    print(f"\n{'─'*70}\n  INTAKE  (session: {SESSIONS['orchestrator'][:8]}…)\n{'─'*70}")
+    print(f"  Customer: {state['customer_id']}  ·  {review['reason_for_review']}")
+    _emit({"type": "routing", "stage": "initial", "tier": "junior_analyst", "reason": review["reason_for_review"]})
+    return {
+        "reason_for_review": review["reason_for_review"], "current_tier": "junior_analyst",
+        "tiers_visited": [], "findings": {}, "human_decisions": {}, "denial_log": [],
+        "final_action": "", "closed_at_tier": "",
     }
-    bound = _bind_forced(_make_llm(state["provider"]), [assign_schema], "assign_request")
-    prompt = (
-        f"Business request:\n{brief}\n\n"
-        f"Decide which role should handle this and what task/purpose it falls under. "
-        f"Available roles: {ROLES}. Available task types: {TASK_TYPES}."
-    )
-    response = bound.invoke([SystemMessage(content="You are a governance orchestrator at a wealth management firm, assigning incoming requests to the right role."),
-                              HumanMessage(content=prompt)])
-    args = response.tool_calls[0]["args"] if response.tool_calls else {}
-    role = args.get("role")
-    if role not in ROLES:
-        role = ROLES[0]
-    task_type = args.get("task_type")
-    # Not every model honors the enum constraint strictly — seen live: qwen2.5:7b
-    # returned a list of candidate task types instead of picking one. Coerce to a
-    # single valid value rather than passing a malformed task_type into every guarded
-    # call downstream, which would deny everything for the wrong reason.
-    if isinstance(task_type, list):
-        task_type = next((t for t in task_type if t in TASK_TYPES), None)
-    if task_type not in TASK_TYPES:
-        task_type = TASK_TYPES[0]
-    print(f"  → assigned to {role}  (task_type={task_type})  {args.get('reasoning','')}")
-    _emit({"type": "routing", "stage": "initial", "role": role, "task_type": task_type, "reasoning": args.get("reasoning", "")})
-
-    return {"brief": brief, "assigned_role": role, "task_type": task_type, "roles_attempted": [], "denial_log": [], "escalated": False}
 
 
-def _run_role(role: str, state: GovernanceState) -> dict:
-    print(f"\n{'─'*70}\n  {role.upper().replace('_',' ')}  (session: {SESSIONS[role][:8]}…)\n{'─'*70}")
-    tools = role_tools(role, state["task_type"], key_hint="C001")
+def _clean_finding_text(text: str) -> str:
+    """Some local models leak tool-call formatting into free-text fields — seen live:
+    qwen2.5:7b's summary once trailed off into `...to complete the review.</parameter>
+    <parameter name="proposed_action">SCHEDULE PORTFOLIO REVIEW CALL`, a fragment of its
+    own tool-call syntax bleeding into the value instead of stopping at the field
+    boundary. Truncate at the first such tag rather than surface it raw everywhere
+    this text gets shown (live feed, disposition banner, escalation reason)."""
+    match = re.search(r"</?\w[^>]*>", text)
+    return text[:match.start()].strip() if match else text
+
+
+def _run_role(role: str, state: ClientReviewState) -> dict:
+    customer_id = state["customer_id"]
+    review = ucdata.CLIENT_REVIEWS[customer_id]
+    task_type = review["tier_tasks"].get(role, DEFAULT_TIER_TASK[role])
+    print(f"\n{'─'*70}\n  {role.upper().replace('_',' ')}  (session: {SESSIONS[role][:8]}…)  task={task_type}\n{'─'*70}")
+    tools = role_tools(role, task_type, key_hint=customer_id)
     brief = (
-        f"You are the {role.replace('_',' ')} handling this business request:\n\n"
-        f"{state['brief']}\n\n"
-        f"Your assigned task type for this request is: {state['task_type']}.\n\n"
+        f"You are the {role.replace('_',' ')} reviewing client {customer_id}.\n\n"
+        f"Reason for review: {state['reason_for_review']}\n\n"
+        f"Your task for this review is: {task_type}.\n\n"
         f"Gather whatever data you need using the tools available to you, then call "
-        f"submit_finding with your response."
+        f"submit_finding with your recommended next action for this client."
     )
     denial_log = list(state["denial_log"])
     finding, _ = run_tool_loop(role, f"You are a {role.replace('_',' ')} at a wealth management firm.",
                                 brief, tools, denial_log, _make_llm(state["provider"]))
-    finding = finding or {"summary": "No finding submitted", "outcome": "BLOCKED"}
-    roles_attempted = [*state["roles_attempted"], role]
+    finding = finding or {"summary": "No finding submitted", "proposed_action": "FLAG FOR COMPLIANCE / RISK REVIEW",
+                           "recommend_escalation": True}
+    # Not every model honors the enum constraint strictly — seen live: qwen2.5:7b
+    # omitted proposed_action outright on some turns despite it being a required
+    # field. Coerce to a safe default rather than let a None/invalid action reach the
+    # review panel and final disposition.
+    if finding.get("proposed_action") not in CLIENT_ACTIONS:
+        finding = {**finding, "proposed_action": "FLAG FOR COMPLIANCE / RISK REVIEW", "recommend_escalation": True}
+    if finding.get("summary"):
+        finding = {**finding, "summary": _clean_finding_text(finding["summary"])}
+    findings = {**state["findings"], role: finding}
+    tiers_visited = [*state["tiers_visited"], role]
     _emit({"type": "finding", "role": role, "finding": finding})
-    return {"finding": finding, "roles_attempted": roles_attempted, "denial_log": denial_log}
+    return {"findings": findings, "tiers_visited": tiers_visited, "denial_log": denial_log, "current_tier": role}
 
 
-def junior_analyst_node(state: GovernanceState) -> dict:
-    return _run_role("junior_analyst", state)
+def _make_role_node(role: str):
+    def _node(state: ClientReviewState) -> dict:
+        return _run_role(role, state)
+    return _node
 
 
-def senior_analyst_node(state: GovernanceState) -> dict:
-    return _run_role("senior_analyst", state)
+def _escalation_reason(role: str, finding: dict, tier_denials: list) -> str:
+    """Grounds *why* a tier escalated in the same signal the decision was actually
+    based on — the CLI's auto-approve never types a note, and a live reviewer clicking
+    "Escalate" often won't either, so without this the routing event's reason is blank."""
+    role_label = role.replace("_", " ")
+    parts = []
+    summary = finding.get("summary")
+    if summary and summary != "No finding submitted":
+        parts.append(summary)
+    elif summary == "No finding submitted":
+        parts.append(f"{role_label} didn't submit a usable finding within {MAX_TOOL_TURNS} tool turns")
+    if tier_denials:
+        mechanisms = sorted({_classify_denial(d["reason"]) for d in tier_denials})
+        parts.append(f"{len(tier_denials)} denial(s) at this tier ({', '.join(mechanisms)})")
+    if finding.get("recommend_escalation") and not parts:
+        parts.append(f"{role_label} recommended escalation to a broader-access role")
+    return " — ".join(parts) if parts else "escalated for a broader-access review"
 
 
-def wealth_advisor_node(state: GovernanceState) -> dict:
-    return _run_role("wealth_advisor", state)
-
-
-def route_to_role(state: GovernanceState) -> str:
-    return state["assigned_role"]
-
-
-def orchestrator_review_node(state: GovernanceState) -> dict:
-    """One optional escalation: if the assigned role hit denials serious enough that it
-    couldn't complete the request, decide whether escalating to senior_analyst (the
-    broadest role) is worth trying, or whether the outcome should stand as blocked.
-    Mirrors the fraud investigation demo's re-route-after-denial pattern.
+def _make_review_node(role: str, next_role: Optional[str]):
+    """Human review after `role`'s tool-calling turn. `interrupt()`s with that tier's
+    finding and denial history; on resume, "approve" finalizes with the tier's own
+    proposed_action, "override" finalizes with the human's chosen action, and
+    "escalate" (only offered when next_role is not None) routes to next_role's node.
     """
-    blocked = state["finding"].get("outcome") == "BLOCKED"
-    recent_denials = [d for d in state["denial_log"] if d["agent_role"] == state["assigned_role"]]
-    can_escalate = (not state["escalated"]) and state["assigned_role"] != "senior_analyst"
+    def _node(state: ClientReviewState) -> dict:
+        finding = state["findings"][role]
+        tier_denials = [d for d in state["denial_log"] if d["agent_role"] == role]
 
-    if not (blocked and recent_denials) or not can_escalate:
-        print(f"\n  [orchestrator review]  accepting outcome as final")
-        _emit({"type": "routing", "stage": "review", "next": "decision", "reason": "no further escalation"})
-        return {"final_decision": "route:decision"}
+        human_decision = interrupt({
+            "customer_id": state["customer_id"], "tier": role,
+            "reason_for_review": state["reason_for_review"], "finding": finding,
+            "denial_log": tier_denials, "can_escalate": next_role is not None,
+            "next_tier": next_role,
+        })
+        decision = human_decision.get("decision", "approve")
+        if decision not in ("approve", "override", "escalate") or (decision == "escalate" and next_role is None):
+            decision = "approve"
 
-    decide_schema = {
-        "name": "decide_next",
-        "description": "Decide whether to escalate this request to a broader role.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "next": {"type": "string", "enum": ["escalate_to_senior_analyst", "accept_outcome"]},
-                "reason": {"type": "string"},
-            },
-            "required": ["next"],
-        },
-    }
-    bound = _bind_forced(_make_llm(state["provider"]), [decide_schema], "decide_next")
-    prompt = (
-        f"Request: {state['brief']}\n\n"
-        f"{state['assigned_role']} attempted this and was blocked. Denials hit:\n"
-        f"{json.dumps(recent_denials, indent=2)}\n\n"
-        f"Should this be escalated to senior_analyst (broader access), or should the "
-        f"outcome stand as blocked (requires human override)?"
-    )
-    response = bound.invoke([SystemMessage(content="You are a governance orchestrator deciding whether to escalate a blocked request."),
-                              HumanMessage(content=prompt)])
-    decision = response.tool_calls[0]["args"] if response.tool_calls else {"next": "accept_outcome"}
-    nxt = decision.get("next")
-    if nxt not in ("escalate_to_senior_analyst", "accept_outcome"):
-        nxt = "accept_outcome"
-    print(f"\n  [orchestrator review]  {nxt}  ({decision.get('reason','')})")
-    _emit({"type": "routing", "stage": "review", "next": nxt, "reason": decision.get("reason", "")})
+        notes = human_decision.get("notes") or None
+        if decision == "escalate" and not notes:
+            notes = _escalation_reason(role, finding, tier_denials)
 
-    if nxt == "escalate_to_senior_analyst":
-        return {"final_decision": "route:senior_analyst", "assigned_role": "senior_analyst", "escalated": True}
-    return {"final_decision": "route:decision"}
+        human_decisions = {**state["human_decisions"], role: {
+            "decision": decision, "override_action": human_decision.get("override_action"),
+            "notes": notes,
+        }}
+
+        print(f"\n{'─'*70}\n  REVIEW  |  {role}\n{'─'*70}")
+        print(f"  Proposed: {finding.get('proposed_action')}")
+        print(f"  Reviewer: {decision.upper()}")
+        if notes:
+            print(f"            {notes}")
+
+        if decision == "escalate":
+            print(f"  → escalating to {next_role}")
+            _emit({"type": "routing", "stage": "review", "tier": role, "next": next_role, "reason": notes or ""})
+            return {"human_decisions": human_decisions, "current_tier": next_role}
+
+        final_action = finding.get("proposed_action") if decision == "approve" else (
+            human_decision.get("override_action") or finding.get("proposed_action"))
+        return _finalize(state, role, final_action, human_decisions)
+    return _node
 
 
-def route_after_review(state: GovernanceState) -> str:
-    return state["final_decision"].split(":", 1)[1]
+def _route_after_review(state: ClientReviewState) -> str:
+    if state.get("closed_at_tier"):
+        return "end"
+    return state["current_tier"]
 
 
-def decision_node(state: GovernanceState) -> dict:
-    request = ucdata.GOVERNANCE_REQUESTS[state["request_id"]]
-    classified = [{"agent_role": d["agent_role"], "tool": d["tool"], "reason": d["reason"],
-                   "mechanism": _classify_denial(d["reason"])} for d in state["denial_log"]]
-    mechanisms = sorted({c["mechanism"] for c in classified})
-
-    # Don't just trust the model's self-reported outcome — an over-eager model can
-    # claim COMPLETED after every single tool call was denied (seen live: qwen2.5:7b did
-    # exactly this). Ground it in the actual audit trail for the role that ran last:
-    # did it get ANY data back at all?
+def _finalize(state: ClientReviewState, closed_at_tier: str, final_action: str,
+              human_decisions: dict) -> dict:
     audit_summary = _collect_audit_summary()
-    last_role = state["roles_attempted"][-1] if state["roles_attempted"] else state["assigned_role"]
-    last_role_audit = audit_summary["roles"].get(last_role, {"allowed": 0})
-    got_data = last_role_audit["allowed"] > 0
-    completed = state["finding"].get("outcome") == "COMPLETED" and got_data
+    all_classified = [{"agent_role": d["agent_role"], "tool": d["tool"], "reason": d["reason"],
+                        "mechanism": _classify_denial(d["reason"])} for d in state["denial_log"]]
 
-    if completed and not state["denial_log"]:
-        outcome = "COMPLETED — request fulfilled using only sources the role was authorized for."
-    elif completed:
-        outcome = f"COMPLETED WITH GOVERNANCE INTERVENTION — {len(state['denial_log'])} attempt(s) denied ({', '.join(mechanisms)}); role completed the request using authorized sources instead."
-    elif state["escalated"]:
-        outcome = f"ESCALATED THEN BLOCKED — request could not be completed even after escalating to {state['assigned_role']}; requires human override."
-    else:
-        outcome = f"BLOCKED — {state['roles_attempted'][0] if state['roles_attempted'] else 'assigned role'} could not complete the request within policy bounds ({', '.join(mechanisms) or 'no data gathered'})."
-
-    print(f"\n{'─'*70}\n  OUTCOME  |  {state['request_id']}\n{'─'*70}")
-    print(f"  Assigned role(s): {state['roles_attempted']}")
-    print(f"  Task type: {state['task_type']}")
-    print(f"  Expected role (ground truth): {request['expected_role']}")
-    print(f"  Outcome: {outcome}")
+    print(f"\n{'─'*70}\n  OUTCOME  |  {state['customer_id']}\n{'─'*70}")
+    print(f"  Tiers visited: {state['tiers_visited']}")
+    print(f"  Closed at: {closed_at_tier}")
+    print(f"  Final action: {final_action}")
     print(f"  Denials encountered: {len(state['denial_log'])}")
-    for d in classified:
+    for d in all_classified:
         print(f"    ✗  [{d['agent_role']}] {d['tool']}: {d['reason']}  ({d['mechanism']})")
 
     _emit({
-        "type": "disposition", "request_id": state["request_id"], "outcome": outcome,
-        "roles_attempted": state["roles_attempted"], "task_type": state["task_type"],
-        "expected_role": request["expected_role"], "denial_count": len(state["denial_log"]),
-        "denials": classified, "audit_summary": audit_summary,
+        "type": "disposition", "customer_id": state["customer_id"], "final_action": final_action,
+        "closed_at_tier": closed_at_tier, "tiers_visited": state["tiers_visited"],
+        "human_decisions": human_decisions, "denial_count": len(state["denial_log"]),
+        "denials": all_classified, "audit_summary": audit_summary,
     })
-    return {"final_decision": outcome}
+    return {"final_action": final_action, "closed_at_tier": closed_at_tier, "human_decisions": human_decisions}
 
 
 # ── graph ─────────────────────────────────────────────────────────────────────────
 
-def build_graph():
-    g = StateGraph(GovernanceState)
-    g.add_node("orchestrator", orchestrator_node)
-    g.add_node("junior_analyst", junior_analyst_node)
-    g.add_node("senior_analyst", senior_analyst_node)
-    g.add_node("wealth_advisor", wealth_advisor_node)
-    g.add_node("orchestrator_review", orchestrator_review_node)
-    g.add_node("decision", decision_node)
+def build_graph(checkpointer=None):
+    g = StateGraph(ClientReviewState)
+    g.add_node("intake", intake_node)
+    g.add_node("junior_analyst", _make_role_node("junior_analyst"))
+    g.add_node("junior_review", _make_review_node("junior_analyst", "senior_analyst"))
+    g.add_node("senior_analyst", _make_role_node("senior_analyst"))
+    g.add_node("senior_review", _make_review_node("senior_analyst", "wealth_advisor"))
+    g.add_node("wealth_advisor", _make_role_node("wealth_advisor"))
+    g.add_node("wealth_review", _make_review_node("wealth_advisor", None))
 
-    g.set_entry_point("orchestrator")
-    g.add_conditional_edges("orchestrator", route_to_role, {r: r for r in ROLES})
-    for role in ROLES:
-        g.add_edge(role, "orchestrator_review")
-    g.add_conditional_edges("orchestrator_review", route_after_review, {
-        **{r: r for r in ROLES}, "decision": "decision",
-    })
-    g.add_edge("decision", END)
-    return g.compile()
+    g.set_entry_point("intake")
+    g.add_edge("intake", "junior_analyst")
+    g.add_edge("junior_analyst", "junior_review")
+    g.add_conditional_edges("junior_review", _route_after_review, {"senior_analyst": "senior_analyst", "end": END})
+    g.add_edge("senior_analyst", "senior_review")
+    g.add_conditional_edges("senior_review", _route_after_review, {"wealth_advisor": "wealth_advisor", "end": END})
+    g.add_edge("wealth_advisor", "wealth_review")
+    g.add_conditional_edges("wealth_review", _route_after_review, {"end": END})
+    return g.compile(checkpointer=checkpointer)
 
 
-# graph is compiled at import time so it's importable by the LangGraph dev server
-# (see langgraph.json: "client_analysis": "...:graph").
+# graph is compiled without a checkpointer at import time so it's importable by the
+# LangGraph dev server (see langgraph.json: "client_analysis": "...:graph"), which
+# manages its own persistence and refuses a pre-compiled custom checkpointer.
 graph = build_graph()
 
 
@@ -611,18 +628,34 @@ def print_audit_trail(request_id: str) -> None:
 
 # ── run ───────────────────────────────────────────────────────────────────────────
 
-def run_request(request_id: str) -> None:
-    request = ucdata.GOVERNANCE_REQUESTS[request_id]
-    print(f"\n{'━'*70}\n  REQUEST {request_id}  —  {request['title']}\n{'━'*70}")
+def run_request(customer_id: str) -> None:
+    review = ucdata.CLIENT_REVIEWS[customer_id]
+    print(f"\n{'━'*70}\n  CUSTOMER {customer_id}  —  {review['reason_for_review']}\n{'━'*70}")
     _reset_sessions()
-    graph.invoke({
-        "request_id": request_id, "provider": "", "brief": "",
-        "assigned_role": "", "task_type": "", "roles_attempted": [], "escalated": False,
-        "finding": {}, "denial_log": [], "final_decision": "",
-    })
-    print_audit_trail(request_id)
+    # The CLI needs its own checkpointed graph — interrupt()/Command(resume=...) require
+    # one, and the module-level `graph` above is deliberately checkpointer-free for
+    # langgraph dev. Same split as fraud_investigation_demo.py and
+    # institutional_portfolio_review_demo.py.
+    cli_graph = build_graph(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": f"cli-{customer_id}"}}
+    result = cli_graph.invoke({
+        "customer_id": customer_id, "provider": "", "reason_for_review": "",
+        "current_tier": "", "tiers_visited": [], "findings": {}, "human_decisions": {},
+        "denial_log": [], "final_action": "", "closed_at_tier": "",
+    }, config=config)
+
+    # A single run can now pause up to 3 times (junior → senior → wealth_advisor), so
+    # unlike every other demo's single `if "__interrupt__" in result`, this has to loop.
+    # Auto-decision mirrors what the tier itself recommended.
+    while "__interrupt__" in result:
+        payload = result["__interrupt__"][0].value
+        finding = payload["finding"]
+        auto_decision = "escalate" if finding.get("recommend_escalation") and payload["can_escalate"] else "approve"
+        result = cli_graph.invoke(Command(resume={"decision": auto_decision}), config=config)
+
+    print_audit_trail(customer_id)
 
 
 if __name__ == "__main__":
-    for request_id in ["GOV-001", "GOV-002", "GOV-003"]:
-        run_request(request_id)
+    for customer_id in ["C001", "C002", "C003", "C004", "C005"]:
+        run_request(customer_id)

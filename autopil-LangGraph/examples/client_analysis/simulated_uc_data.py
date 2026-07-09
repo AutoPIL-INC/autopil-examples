@@ -148,39 +148,40 @@ STRESS_TEST_MODELS = {
 # same disclosure as the fraud demo's own cases).
 # ---------------------------------------------------------------------------
 
-GOVERNANCE_REQUESTS = {
-    "GOV-001": {
-        "request_id": "GOV-001",
-        "title": "Market outlook memo",
-        "brief": (
-            "A wealth advisor is meeting client C002 next week and wants a market "
-            "outlook memo to bring along. Pull together recent market context and "
-            "public research, plus whatever else about C002 would help make the memo "
-            "feel personalized to their situation."
-        ),
-        "expected_role": "junior_analyst",
-        "expected_task_type": "market_research",
+# ---------------------------------------------------------------------------
+# Client review queue — 5 customers up for review, mixed complexity. Every case
+# starts at junior_analyst; `tier_tasks` says what task a tier would work on *if* the
+# case reaches it, but whether it actually escalates that far depends on what each
+# tier's own finding recommends and what the human reviewer decides — not guaranteed,
+# same disclosure as the fraud demo's own cases. `reason_for_review`/`priority`/
+# `opened` are the only fields ever shown before a case is opened (queue card) — never
+# `tier_tasks`, which would give away how far this case is designed to go.
+# ---------------------------------------------------------------------------
+
+CLIENT_REVIEWS = {
+    "C001": {
+        "customer_id": "C001", "priority": "LOW", "opened": "2026-06-01T09:00:00Z",
+        "reason_for_review": "Annual portfolio check-in ahead of Q3 rebalancing window.",
+        "tier_tasks": {"junior_analyst": "portfolio_review"},
     },
-    "GOV-002": {
-        "request_id": "GOV-002",
-        "title": "Credit exposure review",
-        "brief": (
-            "Client C003 (platinum tier) has requested a credit limit increase. "
-            "Prepare a credit exposure review to support the decision — use whatever "
-            "client history and internal risk context is useful to form a complete view."
-        ),
-        "expected_role": "senior_analyst",
-        "expected_task_type": "credit_analysis",
+    "C002": {
+        "customer_id": "C002", "priority": "MEDIUM", "opened": "2026-06-02T13:00:00Z",
+        "reason_for_review": "Requested a market outlook memo; also asked about a potential personal credit line increase.",
+        "tier_tasks": {"junior_analyst": "market_research", "senior_analyst": "credit_analysis"},
     },
-    "GOV-003": {
-        "request_id": "GOV-003",
-        "title": "Retirement plan update",
-        "brief": (
-            "Client C001 is a longtime client due for a retirement plan update. Draft "
-            "the wealth plan update, pulling in their account details so it feels "
-            "tailored to their specific situation."
-        ),
-        "expected_role": "wealth_advisor",
-        "expected_task_type": "wealth_planning",
+    "C003": {
+        "customer_id": "C003", "priority": "HIGH", "opened": "2026-06-01T11:30:00Z",
+        "reason_for_review": "Comprehensive wealth plan update requested, including a credit exposure review ahead of the retirement/estate discussion.",
+        "tier_tasks": {"junior_analyst": "portfolio_review", "senior_analyst": "credit_analysis", "wealth_advisor": "wealth_planning"},
+    },
+    "C004": {
+        "customer_id": "C004", "priority": "MEDIUM", "opened": "2026-06-03T08:45:00Z",
+        "reason_for_review": "Unusual transaction pattern flagged for review — possible risk exposure.",
+        "tier_tasks": {"junior_analyst": "portfolio_review", "senior_analyst": "risk_assessment"},
+    },
+    "C005": {
+        "customer_id": "C005", "priority": "LOW", "opened": "2026-06-02T10:15:00Z",
+        "reason_for_review": "Client requested a market update on holdings ahead of a call next week.",
+        "tier_tasks": {"junior_analyst": "client_reporting"},
     },
 }

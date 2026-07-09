@@ -16,7 +16,7 @@ export const AGENT_POLICIES: AgentPolicy[] = [
   {
     role: "junior_analyst",
     displayName: "Junior Analyst",
-    description: "Market research and reporting only; PII denied outright regardless of task.",
+    description: "First tier on every case. Market research and reporting only; PII denied outright regardless of task.",
     allowedSources: ["catalog.finance.market_data", "catalog.finance.public_reports"],
     deniedSources: ["catalog.finance.customer_pii", "catalog.finance.transaction_history", "catalog.finance.stress_test_models"],
     maxSensitivity: "medium",
@@ -25,7 +25,7 @@ export const AGENT_POLICIES: AgentPolicy[] = [
   {
     role: "senior_analyst",
     displayName: "Senior Analyst",
-    description: "Broad source access, but task_bindings enforce purpose limitation — customer_pii is allowed generally, not for credit_analysis. Critical data blocked by the sensitivity ceiling (max_sensitivity: high), not a source denial.",
+    description: "Second tier — reached only if junior_analyst's case is escalated. Broad source access, but task_bindings enforce purpose limitation — customer_pii is allowed generally, not for credit_analysis. Critical data blocked by the sensitivity ceiling (max_sensitivity: high), not a source denial.",
     allowedSources: [
       "catalog.finance.market_data", "catalog.finance.public_reports", "catalog.finance.customer_pii",
       "catalog.finance.transaction_history", "catalog.finance.credit_scores", "catalog.finance.risk_models",
@@ -38,7 +38,7 @@ export const AGENT_POLICIES: AgentPolicy[] = [
   {
     role: "wealth_advisor",
     displayName: "Wealth Advisor",
-    description: "Portfolio-focused; raw customer PII denied (GDPR Art.5 data minimization) — must work from client_portfolios instead.",
+    description: "Top of the chain — the only tier authorized for wealth_planning, and the last stop a case can escalate to. Portfolio-focused; raw customer PII denied (GDPR Art.5 data minimization) — must work from client_portfolios instead.",
     allowedSources: [
       "catalog.finance.client_portfolios", "catalog.finance.credit_scores", "catalog.finance.market_data",
       "catalog.finance.risk_models", "catalog.finance.public_reports",

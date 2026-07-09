@@ -1,17 +1,17 @@
-// Mirrors GovernanceState in client_analysis_demo.py — only the fields the UI
+// Mirrors ClientReviewState in client_analysis_demo.py — only the fields the UI
 // actually reads are typed strictly, the rest are left loose.
-export interface GovernanceState {
+export interface ClientReviewState {
   [key: string]: unknown;
-  request_id: string;
+  customer_id: string;
   provider: string;
-  brief: string;
-  assigned_role: string;
-  task_type: string;
-  roles_attempted: string[];
-  escalated: boolean;
-  finding: Record<string, unknown>;
+  reason_for_review: string;
+  current_tier: string;
+  tiers_visited: string[];
+  findings: Record<string, unknown>;
+  human_decisions: Record<string, unknown>;
   denial_log: unknown[];
-  final_decision: string;
+  final_action: string;
+  closed_at_tier: string;
 }
 
 export interface ToolCallEvent {
@@ -26,10 +26,8 @@ export interface ToolCallEvent {
 export interface RoutingEvent {
   type: "routing";
   stage: "initial" | "review";
-  role?: string;
-  task_type?: string;
+  tier?: string;
   next?: string;
-  reasoning?: string;
   reason?: string;
 }
 
@@ -38,7 +36,8 @@ export interface FindingEvent {
   role: string;
   finding: {
     summary?: string;
-    outcome?: "COMPLETED" | "BLOCKED";
+    proposed_action?: string;
+    recommend_escalation?: boolean;
     sources_used?: string[];
   };
 }
@@ -62,13 +61,19 @@ export interface AuditSummary {
   denied: number;
 }
 
+export interface HumanDecision {
+  decision: "approve" | "override" | "escalate";
+  override_action: string | null;
+  notes: string | null;
+}
+
 export interface DispositionEvent {
   type: "disposition";
-  request_id: string;
-  outcome: string;
-  roles_attempted: string[];
-  task_type: string;
-  expected_role: string;
+  customer_id: string;
+  final_action: string;
+  closed_at_tier: string;
+  tiers_visited: string[];
+  human_decisions: Record<string, HumanDecision>;
   denial_count: number;
   denials: Array<{ agent_role: string; tool: string; reason: string; mechanism: string }>;
   audit_summary: AuditSummary;
@@ -76,24 +81,70 @@ export interface DispositionEvent {
 
 export type FeedEvent = ToolCallEvent | RoutingEvent | FindingEvent | DispositionEvent;
 
-export const REQUEST_IDS = ["GOV-001", "GOV-002", "GOV-003"] as const;
+// Mirrors the dict passed to interrupt(...) in each tier's review node.
+export interface InterruptPayload {
+  customer_id: string;
+  tier: string;
+  reason_for_review: string;
+  finding: { summary?: string; proposed_action?: string; recommend_escalation?: boolean };
+  denial_log: Array<{ agent_role: string; tool: string; reason: string }>;
+  can_escalate: boolean;
+  next_tier: string | null;
+}
 
-// See simulated_uc_data.py's GOVERNANCE_REQUESTS for the underlying brief text.
-export const REQUEST_INFO: Record<(typeof REQUEST_IDS)[number], { title: string; description: string; estimatedTime: string }> = {
-  "GOV-001": {
-    title: "Market outlook memo",
-    description: "A wealth advisor wants a personalized market memo for a client — tempts toward customer data outside market research's scope.",
-    estimatedTime: "~1–2 min",
+// Must match _FINDING_TOOL_SCHEMA's CLIENT_ACTIONS in client_analysis_demo.py — the
+// override dropdown can only pick one of these, so it can never drift from what the
+// backend understands.
+export const OVERRIDE_ACTIONS = [
+  "NO ACTION NEEDED — CLIENT IN GOOD STANDING",
+  "SEND MARKET UPDATE / RESEARCH TO CLIENT",
+  "SCHEDULE PORTFOLIO REVIEW CALL",
+  "RECOMMEND PORTFOLIO REBALANCING",
+  "SCHEDULE WEALTH PLANNING MEETING",
+  "ESCALATE FOR CREDIT REVIEW",
+  "FLAG FOR COMPLIANCE / RISK REVIEW",
+] as const;
+
+export const TIER_LABELS: Record<string, string> = {
+  junior_analyst: "Junior Analyst",
+  senior_analyst: "Senior Analyst",
+  wealth_advisor: "Wealth Advisor",
+};
+
+export const CUSTOMER_IDS = ["C001", "C002", "C003", "C004", "C005"] as const;
+
+// Mirrors simulated_uc_data.py's CLIENT_REVIEWS — kept in sync by hand, same "adapted
+// from the real backend data" pattern as policyData.ts. Deliberately excludes
+// `tier_tasks` — that would give away how far a case is designed to escalate, the
+// same spoiler-free framing the fraud demo's CASE_ALERTS uses. This is what the
+// Execution tab's review queue actually shows.
+export interface ClientReviewInfo {
+  customerId: string;
+  priority: string;
+  opened: string;
+  reasonForReview: string;
+}
+
+export const CLIENT_REVIEWS: Record<(typeof CUSTOMER_IDS)[number], ClientReviewInfo> = {
+  "C001": {
+    customerId: "C001", priority: "LOW", opened: "2026-06-01T09:00:00Z",
+    reasonForReview: "Annual portfolio check-in ahead of Q3 rebalancing window.",
   },
-  "GOV-002": {
-    title: "Credit exposure review",
-    description: "A credit limit increase review for a platinum client — tests purpose limitation on an otherwise-allowed source.",
-    estimatedTime: "~1–2 min",
+  "C002": {
+    customerId: "C002", priority: "MEDIUM", opened: "2026-06-02T13:00:00Z",
+    reasonForReview: "Requested a market outlook memo; also asked about a potential personal credit line increase.",
   },
-  "GOV-003": {
-    title: "Retirement plan update",
-    description: "A tailored wealth plan draft for a longtime client — tempts toward raw PII instead of portfolio data.",
-    estimatedTime: "~1–2 min",
+  "C003": {
+    customerId: "C003", priority: "HIGH", opened: "2026-06-01T11:30:00Z",
+    reasonForReview: "Comprehensive wealth plan update requested, including a credit exposure review ahead of the retirement/estate discussion.",
+  },
+  "C004": {
+    customerId: "C004", priority: "MEDIUM", opened: "2026-06-03T08:45:00Z",
+    reasonForReview: "Unusual transaction pattern flagged for review — possible risk exposure.",
+  },
+  "C005": {
+    customerId: "C005", priority: "LOW", opened: "2026-06-02T10:15:00Z",
+    reasonForReview: "Client requested a market update on holdings ahead of a call next week.",
   },
 };
 
@@ -108,17 +159,17 @@ export const PROVIDERS = [
   { value: "groq", label: "Groq (Llama, free tier)" },
 ] as const;
 
-export function initialInput(requestId: string, provider: string): GovernanceState {
+export function initialInput(customerId: string, provider: string): ClientReviewState {
   return {
-    request_id: requestId,
+    customer_id: customerId,
     provider,
-    brief: "",
-    assigned_role: "",
-    task_type: "",
-    roles_attempted: [],
-    escalated: false,
-    finding: {},
+    reason_for_review: "",
+    current_tier: "",
+    tiers_visited: [],
+    findings: {},
+    human_decisions: {},
     denial_log: [],
-    final_decision: "",
+    final_action: "",
+    closed_at_tier: "",
   };
 }

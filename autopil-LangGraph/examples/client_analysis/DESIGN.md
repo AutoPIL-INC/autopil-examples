@@ -28,11 +28,11 @@ authorization).
 |---|---|
 | Tool access per role | **Identical across all three roles** — all 8 Unity Catalog tables, every time. Policy, not the tool layer, decides what succeeds. |
 | Role reasoning | Real tool-calling loop per role (same `run_tool_loop()` the fraud demo uses, reused unmodified) |
-| Task assignment | LLM-driven: an orchestrator reads a natural-language business request and decides both the role *and* the `task_type` (purpose) it falls under |
-| "Violation attempts" | Emergent — the model decides for itself, given an ambiguous business request, whether it needs a source outside its role's authorization or outside the assigned task's purpose |
-| Escalation | One optional re-route to `senior_analyst` (the broadest role) if the assigned role is fully blocked — mirrors the fraud demo's re-route-after-denial, capped to a single attempt |
+| Task assignment | Deterministic per case: `simulated_uc_data.CLIENT_REVIEWS[customer_id]["tier_tasks"]` says what task a tier works on *if* it reaches that tier — a lookup, not a model decision |
+| "Violation attempts" | Emergent — the model decides for itself, given its assigned task, whether it needs a source outside its role's authorization or outside that task's purpose |
+| Escalation | Human-in-the-loop, at **every** tier: a case starts at `junior_analyst` and can progressively escalate through `senior_analyst` to `wealth_advisor`, with a human approving, overriding, or escalating the proposed action at each tier it reaches — up to 3 review points per case |
 | Governance enforcement | `guard.protect()` on every tool call, with `task_type` threaded through so `task_bindings` purpose limitation can actually fire |
-| Outcome classification | Grounded in the real audit trail (did the role get any `ALLOW`), not the model's self-reported outcome alone — see §7.4 |
+| Outcome classification | Grounded in the real audit trail (did the role get any `ALLOW`), not any tier's self-reported finding alone — see §7.4 |
 
 The "same tools for everyone" design is deliberate, not incidental: it's the cleanest
 way to show that authorization lives in the policy layer. If each role had a
@@ -49,12 +49,12 @@ surface removes that ambiguity entirely.
   Delta audit table. Local Python fixtures are sufficient to demonstrate the
   governance mechanism; a live workspace would add setup cost with no payoff for this
   repo's audience (see the appendix for what that would actually require).
-- Not guaranteeing the sensitivity-ceiling path fires from the 3 shipped request
-  briefs. Verified against the real policy evaluation order (`policy_engine.py`):
+- Not guaranteeing the sensitivity-ceiling path fires from the 5 shipped customer
+  cases. Verified against the real policy evaluation order (`policy_engine.py`):
   `task_bindings` is checked *before* the sensitivity ceiling, and every
   `senior_analyst_policy` task binding that exists (`credit_analysis`,
   `risk_assessment`) already excludes `stress_test_models` from its permitted
-  sources — so a request assigned to either of those tasks hits `task_bindings`
+  sources — so a case assigned to either of those tasks hits `task_bindings`
   first, never reaching the ceiling check. The ceiling is only reachable if
   `senior_analyst` is assigned a task with *no* binding entry (`market_research`,
   `portfolio_review`, `client_reporting`) and still reaches for `stress_test_models`
@@ -66,8 +66,6 @@ surface removes that ambiguity entirely.
   the fraud investigation demo either — not inventing new AutoPIL API usage without
   verifying it exists in the installed SDK version first. The audit trail reuses
   exactly what the fraud demo proved out: `guard.get_audit_trail(session_id)`.
-- No human-in-the-loop review step. That was specific to the fraud demo's compliance
-  sign-off narrative; this demo's payoff is the governance boundary itself.
 
 ## 4. Folder structure
 
@@ -75,7 +73,7 @@ surface removes that ambiguity entirely.
 examples/client_analysis/
 ├── DESIGN.md                                        # this file
 ├── README.md                                        # setup + run instructions
-├── simulated_uc_data.py                             # 8 simulated UC tables + 3 request briefs
+├── simulated_uc_data.py                             # 8 simulated UC tables + 5-customer review queue
 ├── policies/financial_services/client_analysis.yaml   # the 3-role policy matrix
 ├── client_analysis_demo.py                    # the LangGraph graph
 └── frontend/                                         # live audit-trail viewer (same scaffold as fraud_investigation/frontend)
@@ -93,73 +91,80 @@ examples/client_analysis/
 ## 6. State shape
 
 ```python
-class GovernanceState(TypedDict):
-    request_id: str
+class ClientReviewState(TypedDict):
+    customer_id: str
     provider: str
-    brief: str                    # looked up server-side from request_id, not client-supplied
-    assigned_role: str
-    task_type: str
-    roles_attempted: list[str]     # >1 entry only if escalation happened
-    escalated: bool
-    finding: dict                  # {"summary": str, "outcome": "COMPLETED"|"BLOCKED", "sources_used": [...]}
+    reason_for_review: str        # looked up server-side from customer_id, not client-supplied
+    current_tier: str             # the tier whose review node is (about to be) running
+    tiers_visited: list[str]      # >1 entry only if escalation happened
+    findings: dict                 # {tier: {"summary": str, "proposed_action": str, "recommend_escalation": bool, "sources_used": [...]}}
+    human_decisions: dict          # {tier: {"decision": "approve"|"override"|"escalate", "override_action": str|None, "notes": str|None}}
     denial_log: list[dict]
-    final_decision: str
+    final_action: str
+    closed_at_tier: str
 ```
 
-`brief` is populated by `orchestrator_node` from `simulated_uc_data.GOVERNANCE_REQUESTS`
-using only `request_id` — the same pattern the fraud demo uses for `alert`/
-`case_metadata` (looked up server-side from `case_id`), so the live viewer's client
-never needs to send more than an ID.
+`reason_for_review` is populated by `intake_node` from
+`simulated_uc_data.CLIENT_REVIEWS` using only `customer_id` — the same pattern the
+fraud demo uses for `alert`/`case_metadata` (looked up server-side from `case_id`), so
+the live viewer's client never needs to send more than an ID.
 
 ## 7. Node design
 
-### 7.1 Orchestrator (role + task assignment)
+### 7.1 Intake (deterministic, not LLM-driven)
 
-- Looks up the request brief from `request_id`, then asks the model to decide which of
-  the 3 roles should handle it and what `task_type` it falls under, as structured
-  output (`assign_request` tool, forced via `tool_choice` where the provider supports
-  it).
-- Not every model honors an enum constraint strictly — live-tested with Ollama's
-  `qwen2.5:7b`, which once returned a *list* of candidate task types instead of a
-  single string. `orchestrator_node` coerces this defensively (picks the first valid
-  value from a list, falls back to a default if nothing valid is present) rather than
-  passing a malformed `task_type` into every guarded call downstream, which would deny
-  everything for the wrong reason.
+- Looks up `simulated_uc_data.CLIENT_REVIEWS[customer_id]`, seeds `reason_for_review`
+  and `current_tier: "junior_analyst"` — every case starts at the same tier. No model
+  call: which task a tier works on is pre-designed per case (`tier_tasks`), so there's
+  nothing to classify, unlike the old single-role orchestrator this replaced.
 
 ### 7.2 Role agents (junior_analyst, senior_analyst, wealth_advisor)
 
 - Each is the exact same tool-calling loop (`run_tool_loop()`, reused unmodified from
   the fraud demo) with the exact same 8-tool toolbelt (`role_tools()`) — only
-  `agent_role`/`agent_id`/`task_type` differ per role/request.
-- `task_type` is constant across every tool call within one role's run — it's the
-  business purpose assigned once by the orchestrator, not hardcoded per tool the way
-  the fraud demo's specialists do it. That's what makes `task_bindings` purpose
-  limitation meaningful here: the same source (e.g. `customer_pii`) can succeed under
-  one `task_type` and fail under another, for the identical role.
+  `agent_role`/`agent_id`/`task_type` differ per role/case, built by the
+  `_make_role_node(role)` factory.
+- `task_type` comes from `CLIENT_REVIEWS[customer_id]["tier_tasks"][role]`, falling
+  back to `DEFAULT_TIER_TASK[role]` if a human escalates a case past what it was
+  designed to reach — deterministic, not assigned by a model. That's what makes
+  `task_bindings` purpose limitation meaningful here: the same source (e.g.
+  `customer_pii`) can succeed under one `task_type` and fail under another, for the
+  identical role.
+- Each tier submits a `proposed_action` (one of `CLIENT_ACTIONS` — a concrete
+  next-best-action for the client, not a governance label) and a
+  `recommend_escalation` boolean, via the shared `submit_finding` schema.
+- Not every model honors a required schema field strictly — live-tested with Ollama's
+  `qwen2.5:7b`: `proposed_action` came back missing/`None` on some turns despite being
+  required. `_run_role` coerces it to a safe default (`FLAG FOR COMPLIANCE / RISK
+  REVIEW`, forcing `recommend_escalation: True`) rather than letting an invalid action
+  reach the review panel — same defensive-coercion pattern as the old orchestrator's
+  `task_type` handling this replaced.
 
-### 7.3 Orchestrator review (single optional escalation)
+### 7.3 Review nodes (human-in-the-loop, once per tier)
 
-- If the assigned role's finding reports `BLOCKED` and it actually hit denials, and
-  the role isn't already `senior_analyst`, and no escalation has happened yet, the
-  orchestrator gets one more structured decision: escalate to `senior_analyst` or
-  accept the outcome as final. `escalated: True` on the state prevents a second
-  escalation — self-limiting by construction, no step counter needed.
-- Escalating doesn't guarantee success — verified live: a `wealth_advisor` request
-  escalated to `senior_analyst` under `task_type="wealth_planning"` was *also* denied
-  there, because `senior_analyst_policy.allowed_tasks` doesn't include
-  `wealth_planning` at all. Broader source access doesn't mean broader task
-  authorization.
+- `_make_review_node(role, next_role)` builds one review node per tier.
+  `interrupt()`s with `{customer_id, tier, finding, denial_log, can_escalate,
+  next_tier}` — `can_escalate` is `False` only for `wealth_advisor` (top of the chain).
+- On resume, the human's `{"decision": ...}` is one of:
+  - `"approve"` — finalizes with the tier's own `proposed_action`
+  - `"override"` — finalizes with the human's chosen action from `CLIENT_ACTIONS`
+  - `"escalate"` — routes to `next_role`'s node (only offered when one exists)
+- A case can pause up to 3 times (once per tier it reaches) before it closes. The CLI's
+  `run_request()` loops over `"__interrupt__" in result` rather than the single `if` the
+  fraud/portfolio-review demos use, since a single run here can interrupt more than
+  once. Auto-decision mirrors what the tier itself recommended: `"escalate"` if
+  `recommend_escalation` and `can_escalate`, else `"approve"`.
+- Escalating doesn't guarantee a clean outcome at the next tier — the same
+  `task_bindings`/sensitivity-ceiling denials can fire there too; escalation changes
+  who's asking, not what they're authorized for.
 
-### 7.4 Decision node — grounded in the audit trail, not the model's self-report
+### 7.4 `_finalize` — grounded in the audit trail, not any tier's self-report
 
-`decision_node` does not trust a role's self-reported `outcome` field at face value.
-Live-tested with Ollama's `qwen2.5:7b`: it once returned `outcome: "COMPLETED"` on a
-run where every single tool call had been denied. Before classifying a run as
-completed, `decision_node` checks the real audit trail for the last role that ran —
-did it get at least one `ALLOW` — and only trusts a `COMPLETED` self-report if that's
-true. This is the same spirit as the fraud demo's decision being rule-based rather
-than LLM-improvised (its own §7.4), applied to a self-report-classification problem
-instead of a disposition-generation problem.
+`_finalize` (called from whichever review node closes the case) doesn't just take a
+tier's `proposed_action` at face value once a human has approved or overridden it — the
+disposition it emits carries the real audit trail (`_collect_audit_summary()`), not a
+model's summary of it, same spirit as the fraud demo's decision being grounded in real
+data rather than LLM-improvised (its own §7.4).
 
 Denial reasons are classified into one of four mechanisms by matching against
 AutoPIL's actual returned reason strings (verified against the installed
@@ -175,37 +180,64 @@ AutoPIL's actual returned reason strings (verified against the installed
 | Sensitivity ceiling (`max_sensitivity`) | `senior_analyst_policy` sets `max_sensitivity: high`, not `critical` — `stress_test_models` is blocked by the ceiling when reachable (see §3's non-goal note on when `task_bindings` preempts this) |
 | Audit trail | `guard.get_audit_trail()` per session, same mechanism as the fraud demo |
 | Agent registry / `agent_id` | All 4 roles registered via `SQLiteAgentRegistryStore`, required on every guarded call as of autopil `0.10.0` |
+| Human-in-the-loop review | `interrupt()`/`Command(resume=...)` per tier, same mechanism as the fraud/portfolio-review demos, but up to 3 times in a single run instead of once |
 
 ## 9. Scenarios
 
-Three business requests, one flagship per role, run through the reasoning-driven
-graph. Non-determinism is disclosed as a property of the demo, not hidden — see
-`simulated_uc_data.GOVERNANCE_REQUESTS` for the exact brief text:
+Five customers, mixed complexity, run through the tiered-escalation graph.
+Non-determinism is disclosed as a property of the demo, not hidden — see
+`simulated_uc_data.CLIENT_REVIEWS` for the exact `tier_tasks` per case:
 
-- **GOV-001** — a market outlook memo request, nudging toward `customer_pii`/
-  `transaction_history` instead of `market_data`/`public_reports`.
-- **GOV-002** — a credit exposure review, nudging toward `customer_pii` under a
-  `credit_analysis` task_type that `task_bindings` restricts to `credit_scores`/
-  `risk_models` only.
-- **GOV-003** — a retirement plan update, nudging toward `customer_pii` instead of
-  `client_portfolios`.
+- **C001** — designed to close at `junior_analyst` (`portfolio_review` only).
+- **C002** — designed to reach `senior_analyst` (`market_research` →
+  `credit_analysis`), nudging toward a `credit_analysis` task_type that
+  `task_bindings` restricts to `credit_scores`/`risk_models` only.
+- **C003** — designed to reach `wealth_advisor` (`portfolio_review` →
+  `credit_analysis` → `wealth_planning`) — the one case that exercises the full
+  3-tier chain, since `wealth_planning` is exclusively a `wealth_advisor` task.
+- **C004** — designed to reach `senior_analyst` (`portfolio_review` →
+  `risk_assessment`), a different senior-tier task than C002.
+- **C005** — designed to close at `junior_analyst` (`client_reporting` only).
 
-No scenario is scripted to fail or succeed; the briefs are written to make reaching
-for an out-of-scope source plausible without instructing the model to attempt it.
+Whether a case actually reaches the tier it's designed for depends on what each tier's
+own finding recommends and what the human reviewer decides — not guaranteed on every
+run, same "not scripted" philosophy as every other demo in this repo. `tier_tasks` is
+never shown on the live viewer's queue card (only `reason_for_review`/`priority`/
+`opened` are) — showing it would give away how far a case is designed to escalate
+before the investigation gets there.
 
 ## 10. Open questions / verified live during implementation
 
-1. **Bedrock's `tool_choice` failure mode differs from Ollama's.** Verified directly
-   against the installed `langchain-aws` source (not assumed): forcing a named tool
-   via `tool_choice=<name>` works for Anthropic-on-Bedrock models, but **raises
-   `ValueError` at `bind_tools()` time** for models whose `supports_tool_choice_values`
-   doesn't include `"tool"` (tested against a Llama-family Bedrock model ID). Ollama,
-   by contrast, silently ignores an unsupported `tool_choice`. `_bind_forced()`
-   catches both cases uniformly.
+1. **`_bind_forced()`/forced `tool_choice` no longer applies to this demo.** The prior
+   design used a forced single-tool call for the orchestrator's role/task assignment
+   and its escalation decision — both LLM-driven decisions. Neither exists anymore:
+   `intake_node` looks up the tier chain deterministically, and escalation is a human
+   decision via `interrupt()`. Every remaining `bind_tools()` call in this file
+   (inside `run_tool_loop()`) is already unforced, since a role choosing which data
+   tool to call next is exactly the open-ended decision this demo wants to observe.
+   Removed the now-dead `_bind_forced()`/`_ALWAYS_SUPPORTS_FORCED_CHOICE` rather than
+   leave unused code behind — the Bedrock/Ollama `tool_choice` divergence this handled
+   is still real (see the fraud/portfolio-review demos, which still force a tool for
+   their own single-decision nodes), just no longer exercised here.
 2. **Cost/latency** — same shape as the fraud demo: each role is a multi-turn
    tool-calling loop, not one `llm.invoke()`. Acceptable for a demo script.
-3. **Iteration caps** — `MAX_TOOL_TURNS` bounds each role's loop; the single-escalation
-   design (rather than a step counter) bounds the orchestrator review loop.
+3. **Iteration caps** — `MAX_TOOL_TURNS` bounds each role's loop; the fixed 3-tier
+   chain (`junior_analyst → senior_analyst → wealth_advisor`, no cycles) bounds the
+   escalation path — a case can never revisit a tier it already left.
+4. **The CLI's auto-approve loop has to be a `while`, not an `if`.** Every other
+   human-in-the-loop demo in this repo (fraud, portfolio-review) pauses at most once
+   per run, so `if "__interrupt__" in result: ...` suffices. Here a single case can
+   pause up to 3 times — live-tested across all 5 customers via Ollama, confirming the
+   `while "__interrupt__" in result: result = graph.invoke(Command(resume=...), ...)`
+   loop correctly drives 1-tier, 2-tier, and 3-tier runs to completion without hanging.
+5. **Full 3-tier escalation verified against the real streaming API**, not just the
+   CLI path — created a thread via `POST /threads`, ran C003, resumed at
+   `junior_analyst` with `{"decision": "escalate"}`, confirmed the `senior_analyst`
+   interrupt appeared with `next_tier: "wealth_advisor"`, resumed again with
+   `{"decision": "escalate"}`, confirmed the `wealth_advisor` interrupt appeared with
+   `can_escalate: false`, resumed with `{"decision": "approve"}`, and confirmed the
+   final disposition showed `closed_at_tier: "wealth_advisor"`, all 3 tiers in
+   `tiers_visited`, and all 3 human decisions recorded correctly.
 
 ## 11. Appendix: running against a real Databricks Unity Catalog workspace (not this round)
 
@@ -231,3 +263,61 @@ Unity Catalog table properties flow into AutoPIL's source registry:
 
 Not attempted or tested as part of this round — this is a description of what the
 path would involve, not a verified integration.
+
+## 12. Appendix: hosted trial mode
+
+Implemented — see `saas_guard.py` and the "Hosted AutoPIL SaaS trial mode" section in
+`client_analysis_demo.py`. Same `RemoteContextGuard`/`bootstrap_agents()` design as
+fraud_investigation's own hosted mode (see its DESIGN.md for the fuller writeup); this
+section covers what's specific to this demo. See README.md's own "Hosted AutoPIL SaaS
+trial mode" section for how to get a trial account and Admin/Evaluate keys — this
+appendix covers what was verified, not setup steps.
+
+**Verified live against the same real trial tenant** used for fraud_investigation
+(`https://autopil-api.onrender.com`, 2026-07-09):
+
+1. **`junior_analyst_policy` and `senior_analyst_policy` matched the local YAML
+   byte-for-byte**, same as fraud_investigation's roles did — no translation needed.
+2. **`wealth_advisor` has a real naming collision on this tenant**: two policies
+   declare `agent_role="wealth_advisor"` — `demo_wealth_advisor_policy` (matches
+   `policies/financial_services/client_analysis.yaml`'s `wealth_advisor_policy`
+   exactly — same `catalog.finance.*` source names, same task_bindings) and
+   `wealth_advisor_policy` (an unrelated, pre-existing generic wealth-demo policy
+   using entirely different source names like `portfolio_holdings` instead of
+   `catalog.finance.client_portfolios`). The evaluate endpoint's role-scan fallback
+   (used when an agent has no explicit `policy_name`) would risk binding to whichever
+   of the two it resolves first — confirmed by registering a test agent and checking
+   its bound `policy_name` came back correctly only because `bootstrap_agents()` pins
+   it explicitly (`_SAAS_POLICY_NAMES["wealth_advisor"] = "demo_wealth_advisor_policy"`
+   in `client_analysis_demo.py`), not because the fallback happened to pick right.
+3. **`GET /v1/audit/sessions/{id}` requires the Admin key**, not the Evaluate key — an
+   Evaluate-scoped key gets `403 Forbidden` calling it, discovered live when a full
+   3-tier run's `_finalize()` crashed trying to read the audit trail with only the
+   evaluate key wired through. `RemoteContextGuard` takes both keys for exactly this
+   split: `evaluate_key` for `.protect()`'s decision calls, `admin_key` for
+   `.get_audit_trail()`. This is a real API constraint, not demo-specific — the same
+   fix was applied to fraud_investigation's `saas_guard.py` copy.
+4. **A live multi-tier run** (C001, junior_analyst → senior_analyst, via Ollama)
+   produced the same shape of outcome as local mode: real per-tier `ALLOW`/`DENY`
+   decisions matching the policy (`task_bindings` and plain `denied_sources`/
+   `allowed_sources` denials both fired correctly), the human-in-the-loop
+   `interrupt()`/resume flow worked unchanged (it's a LangGraph mechanism,
+   independent of which guard backs it), and the audit trail read back correctly for
+   both tiers' sessions after the fix in point 3.
+5. **The vestigial `governance_orchestrator` entry was removed from `AGENT_IDS`**
+   while wiring this — a leftover from the pre-tiered design (§7.1's old
+   LLM-classifying orchestrator), never referenced by any guarded call since
+   `intake_node` replaced it with a plain lookup. No SaaS agent needed for it either.
+6. **Known gap, inherited from the hosted API itself, not this demo**: no
+   `permitted_agent_ids`/`sensitivity_decay` fields exist in the hosted policy schema
+   (`GET`/`POST /v1/policies`) — doesn't affect this demo directly since none of its 3
+   roles use either feature locally, but flagged here for completeness alongside
+   fraud_investigation's disclosure of the same gap.
+7. **`owner_team` (business-accountable team, e.g. "Wealth Team") doesn't persist via
+   `PUT /v1/agents/{id}`** — confirmed live: the request returns `200` and
+   `updated_at` changes, but `owner_team` reads back `null` immediately after.
+   `bootstrap_agents()` still sends `owner_team` on agent *creation* (untested,
+   since this demo's 3 agents already existed when this was added) and attempts to
+   sync it via `PUT` on every call for existing ones — harmless no-op against this
+   gap today, forward-compatible if the hosted API's update path is fixed later.
+   Not something fixable from this repo's side.
