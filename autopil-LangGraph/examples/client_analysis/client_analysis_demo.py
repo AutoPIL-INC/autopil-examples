@@ -315,14 +315,22 @@ class DenialEvent(TypedDict):
 
 
 def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
-                   tools: list, denial_log: list, llm) -> tuple[Optional[dict], list]:
-    """Run one role's tool-calling loop to completion (or MAX_TOOL_TURNS)."""
+                   tools: list, denial_log: list, llm) -> tuple[Optional[dict], list, bool]:
+    """Run one role's tool-calling loop to completion (or MAX_TOOL_TURNS).
+
+    Returns (finding, local_denials, got_data) — got_data is True if at least one
+    tool call this turn actually succeeded. _run_role uses it to decide whether a
+    "no finding submitted" outcome should recommend escalation: a tier that got real,
+    usable data back but still failed to conclude has a model-reliability problem,
+    not a genuine authorization gap escalating would fix.
+    """
     tool_map = {t.name: t for t in tools}
     bound = llm.bind_tools([*tools, _FINDING_TOOL_SCHEMA])
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_brief)]
     local_denials: list[DenialEvent] = []
+    got_data = False
 
-    for _ in range(MAX_TOOL_TURNS):
+    for turn in range(MAX_TOOL_TURNS):
         response = bound.invoke(messages)
         messages.append(response)
 
@@ -349,6 +357,7 @@ def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
                 print(f"      [DENIED]  {agent_role} -> {call['name']}({key})")
                 print(f"                {result['reason']}")
             else:
+                got_data = True
                 print(f"      [ok]      {agent_role} -> {call['name']}({key})")
 
             _emit({
@@ -360,11 +369,27 @@ def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
 
         if finding is not None:
             denial_log.extend(local_denials)
-            return finding, local_denials
+            return finding, local_denials, got_data
+
+        # Escalating conclude-now nudge — same fix already verified live for
+        # institutional_portfolio_review's larger toolbelt. Without it, a model that
+        # keeps getting denied tends to retry more tools instead of calling
+        # submit_finding with whatever it already has (seen live: qwen2.5:7b burning
+        # all 5 turns this way even after getting real, usable data back on turn 1).
+        turns_left = MAX_TOOL_TURNS - turn - 1
+        if turns_left <= 1:
+            messages.append(HumanMessage(
+                content="You must call submit_finding now, based on what you've gathered so far. Do not call any more data tools."
+            ))
+        else:
+            messages.append(HumanMessage(
+                content="You now have results from the tools you called. If you have enough to respond, call "
+                        "submit_finding now instead of repeating tools you've already called."
+            ))
 
     denial_log.extend(local_denials)
     print(f"      [warn]    {agent_role} exhausted {MAX_TOOL_TURNS} turns without submit_finding")
-    return None, local_denials
+    return None, local_denials, got_data
 
 
 # ── LangGraph state ──────────────────────────────────────────────────────────────
@@ -442,16 +467,23 @@ def _run_role(role: str, state: ClientReviewState) -> dict:
         f"submit_finding with your recommended next action for this client."
     )
     denial_log = list(state["denial_log"])
-    finding, _ = run_tool_loop(role, f"You are a {role.replace('_',' ')} at a wealth management firm.",
-                                brief, tools, denial_log, _make_llm(state["provider"]))
-    finding = finding or {"summary": "No finding submitted", "proposed_action": "FLAG FOR COMPLIANCE / RISK REVIEW",
-                           "recommend_escalation": True}
+    finding, _, got_data = run_tool_loop(role, f"You are a {role.replace('_',' ')} at a wealth management firm.",
+                                          brief, tools, denial_log, _make_llm(state["provider"]))
+    if finding is None:
+        # Exhausting all tool turns without concluding isn't the same thing as "this
+        # needs broader access" — only recommend escalating if the tier never got any
+        # real data either. If it did (e.g. the one source its task actually
+        # authorizes), a higher tier isn't more likely to succeed at the same task;
+        # flag it for compliance and let it close here instead of climbing the tier
+        # ladder for no real reason.
+        finding = {"summary": "No finding submitted", "proposed_action": "FLAG FOR COMPLIANCE / RISK REVIEW",
+                   "recommend_escalation": not got_data}
     # Not every model honors the enum constraint strictly — seen live: qwen2.5:7b
     # omitted proposed_action outright on some turns despite it being a required
     # field. Coerce to a safe default rather than let a None/invalid action reach the
     # review panel and final disposition.
     if finding.get("proposed_action") not in CLIENT_ACTIONS:
-        finding = {**finding, "proposed_action": "FLAG FOR COMPLIANCE / RISK REVIEW", "recommend_escalation": True}
+        finding = {**finding, "proposed_action": "FLAG FOR COMPLIANCE / RISK REVIEW", "recommend_escalation": not got_data}
     if finding.get("summary"):
         finding = {**finding, "summary": _clean_finding_text(finding["summary"])}
     findings = {**state["findings"], role: finding}
