@@ -38,26 +38,35 @@ export default function DescriptionTab() {
       <section className="desc-section">
         <h2>What this demo shows</h2>
         <p>
-          Three specialist Claude/Gemini/Groq/Ollama agents, orchestrated with
-          LangGraph, work an AML case under a real AutoPIL policy — split out of the
-          institutional portfolio review demo, where this financial-crime-governance
-          workflow sat split across two policy files despite being one coherent story.
-          One dedicated policy file here instead. Each agent is a real tool-calling
-          loop — not a scripted branch — and each is handed a toolbelt{" "}
-          <strong>wider</strong> than what its policy actually authorizes. Nothing in
-          the code tells an agent which of its tools are off-limits; it finds out the
-          same way a production agent would: it calls a tool, and AutoPIL's{" "}
-          <code>guard.protect()</code> either returns data or a denial reason.
+          Three roles run a fixed AML investigation chain — an investigator looks at
+          transaction and watchlist signal, a KYC agent verifies identity, a compliance
+          officer reviews and signs off. Each has access to more data than its role is
+          actually cleared to use.
         </p>
         <p>
-          Every case runs the same fixed sequence — the AML investigator looks at
-          transaction and watchlist signal, the KYC agent verifies identity, the
-          compliance officer reviews and signs off. When a denial happens on the
-          Execution tab, it's because the model reasoned its way toward an
-          out-of-scope source on its own. Before the final disposition is written, a
-          human compliance reviewer gets the last word: approve the proposed action,
-          or override it.
+          AutoPIL decides in real time what each role can reach, under one dedicated
+          policy covering the whole chain. When AutoPIL blocks a request on the
+          Execution tab, it's the model reasoning its way into out-of-scope territory
+          on its own. And no case closes without a human compliance reviewer signing
+          off or overriding the recommendation.
         </p>
+        <details className="desc-technical">
+          <summary>How this actually works, technically</summary>
+          <p>
+            Each agent runs a real tool-calling loop — not a scripted branch — on
+            whichever model you pick (Claude, Gemini, Groq, or Ollama), and each is
+            handed a toolbelt <strong>wider</strong> than what its policy actually
+            authorizes. Nothing in the code tells an agent which of its tools are
+            off-limits; it finds out the same way a production agent would: it calls a
+            tool, and AutoPIL's <code>guard.protect()</code> either returns data or a
+            denial reason.
+          </p>
+          <p>
+            The final disposition is rule-based, grounded in the real underlying
+            signal data — not any role's self-reported finding, and not
+            LLM-improvised.
+          </p>
+        </details>
       </section>
 
       <section className="desc-section">

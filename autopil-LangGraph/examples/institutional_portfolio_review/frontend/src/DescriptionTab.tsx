@@ -42,24 +42,42 @@ export default function DescriptionTab() {
       <section className="desc-section">
         <h2>What this demo shows</h2>
         <p>
-          Eleven roles — one orchestrator plus ten specialists — enforced under{" "}
-          <strong>two real AutoPIL policy files at once</strong>:{" "}
-          <code>portfolio_review_wealth.yaml</code> (wealth-advisory roles) and{" "}
-          <code>portfolio_review_risk.yaml</code> (risk/compliance roles). Which policy
-          file governs a role is a property of the <em>role</em>, not the source it's
-          reaching for — <code>credit_scores</code>, <code>loan_history</code>,{" "}
-          <code>identity_records</code>, and <code>risk_models</code> are referenced by
-          roles from <strong>both</strong> files, each evaluated under whichever file
-          that specific role's policy lives in.
+          Eight roles — one orchestrator plus seven specialists — work a portfolio review
+          the way a real institutional workflow would: research, advisory, rebalancing,
+          settlement, reporting. An orchestrator reads the request in plain language,
+          figures out which of five review types it is, and routes it through the right
+          sequence of roles.
         </p>
         <p>
-          Every role is handed the same full toolbelt across both catalogs — nothing in
-          the tool layer restricts what a role can reach for. An orchestrator reads a
-          natural-language review request and classifies it into a review type, which
-          maps to a real institutional workflow (research → advisory → rebalancing →
-          settlement → reporting) — modeling the process, not scripting a violation.
-          What each role reaches for <em>within</em> its step stays fully emergent.
+          Two separate policies govern the review at once — one for wealth-advisory
+          roles, one for risk and compliance roles — and which one applies depends on
+          the role doing the asking, not the data being asked for: several sources
+          (credit scores, loan history, risk models) are reachable by roles on both
+          sides, each checked against whichever policy that role actually falls under.
+          The fiduciary wall shows up directly in the policy: a wealth advisor is
+          blocked from other clients' portfolios, while the analyst whose job is peer
+          benchmarking is explicitly cleared for it.
         </p>
+        <details className="desc-technical">
+          <summary>How this actually works, technically</summary>
+          <p>
+            <strong>Two real AutoPIL policy files at once</strong>:{" "}
+            <code>portfolio_review_wealth.yaml</code> and{" "}
+            <code>portfolio_review_risk.yaml</code>. Every role is handed the same full
+            toolbelt across both catalogs — nothing in the tool layer restricts what a
+            role can reach for. What each role reaches for <em>within</em> its step
+            stays fully emergent; the orchestrator models the process, it doesn't
+            script a violation.
+          </p>
+          <p>
+            <code>quarterly_review</code> is the flagship chain — Investment Analyst →
+            Wealth Advisor → Rebalancing Agent → Report Generator, capped at 4 roles
+            deliberately. The other 4 review types run 1 to 3 roles each. Outcome
+            classification is
+            grounded in each role's real audit trail, not its self-report, before a
+            supervisor approves or overrides the final outcome.
+          </p>
+        </details>
       </section>
 
       <section className="desc-section">
@@ -144,10 +162,9 @@ export default function DescriptionTab() {
       <section className="desc-section">
         <h2>Risk & compliance roles (portfolio_review_risk.yaml)</h2>
         <p>
-          AML, credit, and settlement data. <code>settlement_agent</code> is new here —
-          the demo this was adapted from had tool functions for it but no matching
-          policy at all, so every call it made was denied by default. It has a real
-          policy in this version.
+          Credit, delinquency, trade settlement, and counterparty data —{" "}
+          <code>settlement_agent</code> is scoped to trade confirmations and
+          counterparty data only, with no client PII or portfolio holdings access.
         </p>
         <div className="policy-grid">
           {riskPolicies.map((p) => <PolicyCard key={p.role} policy={p} />)}

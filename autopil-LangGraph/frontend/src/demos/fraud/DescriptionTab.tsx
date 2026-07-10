@@ -40,20 +40,33 @@ export default function DescriptionTab() {
       <section className="desc-section">
         <h2>What this demo shows</h2>
         <p>
-          Five specialist Claude/Gemini/Groq/Ollama agents, orchestrated with LangGraph,
-          investigate fraud cases under a real AutoPIL policy. Each specialist is a real
-          tool-calling loop — not a scripted branch — and each is handed a toolbelt{" "}
-          <strong>wider</strong> than what its policy actually authorizes. Nothing in the
-          code tells a specialist which of its tools are off-limits; it finds out the same
-          way a production agent would: it calls a tool, and AutoPIL's{" "}
-          <code>guard.protect()</code> either returns data or a denial reason.
+          Five AI agents work a fraud case the way a real investigations team would — an
+          orchestrator, a transaction analyst, an account profiler, a KYC specialist, and
+          a report writer — each given access to more data than it's actually allowed to
+          use.
         </p>
         <p>
-          When a denial happens on the Execution tab, it's because the model reasoned its
-          way toward an out-of-scope source on its own — not because a scripted branch
-          forced it to. Before the final disposition is written, a human compliance
-          reviewer gets the last word: approve the proposed action, or override it.
+          AutoPIL is the policy layer that decides, in real time, what each agent can see.
+          When an agent reaches for data outside its lane, AutoPIL blocks it and logs why
+          — the same way it would in production, not because the demo told it not to look
+          there. And no case closes on an AI's say-so: a human compliance reviewer signs
+          off or overrides every recommendation before it's final.
         </p>
+        <details className="desc-technical">
+          <summary>How this actually works, technically</summary>
+          <p>
+            Each specialist runs a real tool-calling loop — not a scripted branch — on
+            whichever model you pick (Claude, Gemini, Groq, or Ollama), and each is handed
+            a toolbelt <strong>wider</strong> than what its policy actually authorizes.
+            Nothing in the code tells a specialist which of its tools are off-limits; it
+            finds out the same way a production agent would: it calls a tool, and
+            AutoPIL's <code>guard.protect()</code> either returns data or a denial reason.
+          </p>
+          <p>
+            Every denial you see on the Execution tab is the model reasoning its way
+            toward an out-of-scope source on its own — not a scripted demo beat.
+          </p>
+        </details>
       </section>
 
       <section className="desc-section">

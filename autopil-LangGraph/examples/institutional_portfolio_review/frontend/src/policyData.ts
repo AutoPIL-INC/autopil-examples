@@ -58,32 +58,11 @@ export const AGENT_POLICIES: AgentPolicy[] = [
     maxSensitivity: "critical", sessionTtlMinutes: 60,
   },
   {
-    role: "kyc_agent", displayName: "KYC Agent", policyFile: "wealth",
-    description: "Identity and credit verification; no risk models or executive communications access.",
-    allowedSources: ["catalog.risk.credit_scores", "catalog.risk.loan_history", "catalog.risk.identity_records"],
-    deniedSources: ["catalog.risk.risk_models", "catalog.wealth.executive_communications"],
-    maxSensitivity: "high", sessionTtlMinutes: 240,
-  },
-  {
-    role: "compliance_officer", displayName: "Compliance Officer", policyFile: "risk",
-    description: "Broad audit and regulatory review access, including authorized cross-client audit; restricted from executive communications.",
-    allowedSources: ["catalog.risk.account_summaries", "catalog.risk.credit_scores", "catalog.risk.loan_history", "catalog.risk.audit_logs", "catalog.risk.regulatory_filings", "catalog.risk.transaction_history", "catalog.wealth.portfolio_holdings", "catalog.wealth.portfolio_metrics", "catalog.wealth.client_profile"],
-    deniedSources: ["catalog.wealth.executive_communications"],
-    maxSensitivity: "critical", sessionTtlMinutes: 60,
-  },
-  {
     role: "credit_risk_analyst", displayName: "Credit Risk Analyst", policyFile: "risk",
     description: "Portfolio metrics and economic analysis for credit review; no client PII or board materials access.",
     allowedSources: ["catalog.risk.loan_history", "catalog.risk.credit_scores", "catalog.wealth.economic_indicators", "catalog.wealth.portfolio_metrics", "catalog.risk.delinquency_records"],
     deniedSources: ["catalog.wealth.executive_communications", "catalog.risk.board_materials", "catalog.wealth.client_profile"],
     maxSensitivity: "high", sessionTtlMinutes: 240,
-  },
-  {
-    role: "aml_investigator", displayName: "AML Investigator", policyFile: "risk",
-    description: "Transaction and watchlist analysis for AML; strict isolation from other roles' sessions.",
-    allowedSources: ["catalog.risk.transaction_history", "catalog.risk.watchlist", "catalog.risk.counterparty_data", "catalog.risk.account_summaries", "catalog.risk.delinquency_records"],
-    deniedSources: ["catalog.risk.personal_hr_records", "catalog.risk.marketing_data", "catalog.risk.internal_risk_models"],
-    maxSensitivity: "critical", sessionTtlMinutes: 60,
   },
   {
     role: "settlement_agent", displayName: "Settlement Agent", policyFile: "risk",
@@ -99,10 +78,7 @@ export const REGULATIONS = [
   { id: "FINRA-2111", name: "FINRA Rule 2111 — Suitability" },
   { id: "REG-BI", name: "SEC Regulation Best Interest (Reg BI)" },
   { id: "FINRA-4511", name: "FINRA Rules 4511/4512 — Books and Records" },
-  { id: "KYC-FATF", name: "FATF Recommendation 10 — Customer Due Diligence" },
   { id: "SOX", name: "Sarbanes-Oxley Act — Sections 302 and 404" },
-  { id: "BSA-AML", name: "Bank Secrecy Act — Anti-Money Laundering" },
   { id: "SR-11-7", name: "SR 11-7 — Model Risk Management Guidance" },
-  { id: "OFAC", name: "OFAC Sanctions — Entity Resolution Requirements" },
   { id: "SSAE-18", name: "SSAE 18 — Settlement and Custody Controls" },
 ];

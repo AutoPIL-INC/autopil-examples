@@ -609,6 +609,28 @@
   padding: 1px 6px;
 }
 
+.desc-technical {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px 16px;
+}
+
+.desc-technical summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.desc-technical p {
+  margin-top: 12px;
+}
+
+.desc-technical p:last-child {
+  margin-bottom: 0;
+}
+
 /* ── agent flow diagram ──────────────────────────────────────────── */
 .flow-diagram {
   display: flex;

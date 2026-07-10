@@ -42,24 +42,31 @@ export default function DescriptionTab() {
       <section className="desc-section">
         <h2>What this demo shows</h2>
         <p>
-          Three roles — junior analyst, senior analyst, wealth advisor — share the{" "}
-          <strong>exact same toolbelt</strong>: all 8 Unity Catalog tables are offered
-          to every role, with no restriction in the tool layer at all. "You don't give
-          each role a different tool set. You give every agent the same tools and let
-          policy control what succeeds." AutoPIL's <code>guard.protect()</code> is what
-          actually decides what each role can reach, at retrieval time.
+          Three roles — junior analyst, senior analyst, wealth advisor — review the same
+          client cases, and every one of them has access to the exact same client data.
+          Nothing technical stops a junior analyst from reaching for a client's full risk
+          profile. As we put it building this: you don't give each role a different tool
+          set, you give every agent the same tools and let policy control what succeeds.
         </p>
         <p>
-          Every customer review starts at junior_analyst. That tier gathers data with
-          its own tool-calling loop, proposes a concrete next action for the client, and
-          a human reviewer decides: approve it, override it with a different action, or
-          escalate the case to the next tier for a second look — senior_analyst, then
-          wealth_advisor. When a denial happens on the Execution tab, it's because a
-          tier reasoned its way toward a source its task doesn't cover, exercising one
-          of four distinct enforcement paths: <code>denied_sources</code>,{" "}
-          <code>denied_tasks</code>, <code>task_bindings</code> purpose limitation, or
-          the sensitivity ceiling.
+          Every review starts at the junior tier. A human reviewer checks that tier's
+          proposed action and can approve it, override it, or send the case up for a
+          second look — junior to senior to wealth advisor. When AutoPIL blocks a
+          request on the Execution tab, it's because a tier reasoned its way toward
+          something its role or its specific task doesn't cover — not a scripted
+          failure.
         </p>
+        <details className="desc-technical">
+          <summary>How this actually works, technically</summary>
+          <p>
+            All 8 Unity Catalog tables are offered to every role, with no restriction in
+            the tool layer at all — AutoPIL's <code>guard.protect()</code> is what
+            actually decides what each role can reach, at retrieval time. A denial can
+            come from one of four distinct enforcement paths:{" "}
+            <code>denied_sources</code>, <code>denied_tasks</code>,{" "}
+            <code>task_bindings</code> purpose limitation, or the sensitivity ceiling.
+          </p>
+        </details>
       </section>
 
       <section className="desc-section">
