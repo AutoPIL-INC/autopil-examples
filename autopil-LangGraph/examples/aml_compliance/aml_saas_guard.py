@@ -23,23 +23,33 @@ Verified live against a real trial tenant (base_url https://autopil-api.onrender
     does not.
   - Agents are created with status "draft" and must be explicitly approved
     (PATCH /v1/agents/{id}/status) before they can evaluate anything.
-  - **This tenant's pre-seeded `aml_investigator_policy`/`kyc_agent_policy`/
-    `compliance_officer_policy` are a close, but not exact, match** for
-    `policies/financial_services/aml_compliance.yaml`. `aml_investigator_policy`
-    matches byte-for-byte. `kyc_agent_policy` matches except one extra denied source
-    (`application_forms`, not present locally — harmless, since this demo never
-    reaches for it anyway). `compliance_officer_policy` has real drift: the hosted
-    version's `allowed_sources` additionally includes `loan_history`/
-    `portfolio_metrics` (present in the *original* institutional_portfolio_review
-    policy this was split from, but trimmed from this demo's own YAML since no tool
-    here exercises them), and its `sar_filing`/`cross_client_audit`/
-    `fiduciary_review` task_bindings differ slightly. Reused as-is rather than
-    creating a dedicated `demo_`-prefixed policy (unlike institutional_portfolio_
-    review's `ipr_saas_guard.py`, which had to, since none of *its* pre-seeded
-    policies matched at all) — this is a deliberate "good enough, disclosed" call,
-    not an oversight: `compliance_officer` in SaaS mode has marginally broader real
-    access than local mode, never narrower, so no local-mode-only denial becomes a
-    false ALLOW remotely.
+  - **This demo's source names use catalog.wealth.*/catalog.risk.* FQNs, matching
+    institutional_portfolio_review's convention — not this tenant's pre-seeded
+    `aml_investigator_policy`/`kyc_agent_policy`/`compliance_officer_policy`, which
+    use plain source names.** Binding to any of those pre-seeded policies as-is would
+    deny every call for a naming mismatch, not real enforcement. `ensure_policy()`
+    below creates 3 new `demo_aml_<role>_policy` policies instead — translated
+    field-for-field from `policies/financial_services/aml_compliance.yaml` (see
+    `aml_compliance_demo.py`'s `_POLICY_SPECS`), so this demo's own source naming
+    never has to change between local and hosted mode.
+  - **`bootstrap_agents()` must rebind `policy_name` on an existing agent, not just
+    `owner_team`** — caught live switching this demo onto the FQN source names: this
+    tenant's 3 agents already existed (registered under the old default
+    `f"{role}_policy"` naming before the switch), and `PUT /v1/agents/{id}` accepting
+    a new `policy_name` does *not* actually repoint what `/v1/context/evaluate`
+    resolves for that agent_id — it stays pinned to whatever policy was bound at
+    creation. The only fix that actually worked was deleting the 3 stale agents
+    (`DELETE /v1/agents/{id}`) and letting `bootstrap_agents()` recreate them fresh,
+    bound to `demo_aml_<role>_policy` from the start.
+  - **Short eventual-consistency lag right after creating a new agent/policy.** The
+    very first `evaluate()` calls against a just-created agent_id can still resolve
+    against the old/wrong policy binding for a few seconds before settling — a run
+    immediately after `bootstrap_agents()` created fresh agents showed 0 allowed
+    across the board, while a direct diagnostic call against the same agent_id
+    moments later correctly resolved to `demo_aml_<role>_policy` and allowed. A
+    re-run once things settled came back with the expected healthy allow/deny mix.
+    Not something this code works around — just something to expect if you're
+    testing hosted mode immediately after (re)creating agents.
   - `aml_investigator`/`kyc_agent`/`compliance_officer` don't collide with any other
     demo's role names on this tenant (checked directly against the full policy
     list), so the generic `owner_tag="autopil-langgraph-demos"` is safe to reuse here
@@ -131,6 +141,27 @@ class RemoteContextGuard:
         return [_RemoteAuditEvent(e) for e in resp.json()["events"]]
 
 
+def ensure_policy(base_url: str, admin_key: str, name: str, agent_role: str, spec: dict) -> None:
+    """Idempotently ensure a policy named `name` exists on the hosted tenant,
+    creating it via POST /v1/policies if missing. Existing policies are left as-is —
+    call sites should pick a name unlikely to collide with a pre-seeded one (e.g. the
+    "demo_" prefix this file uses) if they need guaranteed content, since this
+    function only checks for a name match, not content equality.
+
+    `spec` is passed straight through as the rest of CreatePolicyRequest's body
+    (allowed_sources/denied_sources/allowed_tasks/denied_tasks/max_sensitivity/
+    task_bindings/require_task_for_sensitivity/description/...) — no session_ttl_minutes
+    or sensitivity_decay field exists on this endpoint (confirmed against the real
+    OpenAPI schema, same as ipr_saas_guard.py's copy of this function).
+    """
+    client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
+    existing = client.get("/v1/policies").json()
+    if any(p.get("name") == name for p in existing):
+        return
+    resp = client.post("/v1/policies", json={"name": name, "agent_role": agent_role, **spec})
+    resp.raise_for_status()
+
+
 def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag: str,
                       policy_name_for: "callable[[str], str]" = lambda role: f"{role}_policy",
                       owner_team: "str | None" = None) -> dict[str, str]:
@@ -145,7 +176,13 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
     field) is purely this lookup key, distinct from `owner_team` — the actual
     business-accountable team — which is kept in sync via PUT on every call if it's
     out of date, including on agents that were registered before this parameter
-    existed.
+    existed. `policy_name` is kept in sync the same way — needed here specifically:
+    this demo's roles were already registered on the shared tenant under the default
+    `f"{role}_policy"` naming before it switched to dedicated `demo_aml_<role>_policy`
+    policies (see `ensure_policy()`/module docstring), and reusing an existing agent
+    without rebinding its policy would silently keep evaluating against the old
+    plain-source-name policy — every call denied for a naming mismatch, not real
+    enforcement. Caught live exactly this way the first time this ran post-rename.
     """
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
     existing = client.get("/v1/agents", params={"framework": "langgraph", "owner": owner_tag}).json()
@@ -164,10 +201,15 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
             })
             resp.raise_for_status()
             agent = resp.json()
-        elif owner_team is not None and agent.get("owner_team") != owner_team:
-            resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner_team": owner_team})
-            resp.raise_for_status()
-            agent = resp.json()
+        else:
+            if agent.get("policy_name") != policy_name_for(role):
+                resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"policy_name": policy_name_for(role)})
+                resp.raise_for_status()
+                agent = resp.json()
+            if owner_team is not None and agent.get("owner_team") != owner_team:
+                resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner_team": owner_team})
+                resp.raise_for_status()
+                agent = resp.json()
         if agent["status"] != "approved":
             resp = client.patch(f"/v1/agents/{agent['agent_id']}/status", json={"status": "approved"})
             resp.raise_for_status()

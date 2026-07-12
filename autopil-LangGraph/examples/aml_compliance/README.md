@@ -151,10 +151,11 @@ persistence itself and refuses to load a graph pre-compiled with one.
   call each run — if a run comes back with zero denials, that's a valid outcome, not
   a bug.
 - **Three distinct enforcement paths are exercisable**: `task_bindings` purpose
-  limitation (`aml_investigator` reaching for `identity_records` under
+  limitation (`aml_investigator` reaching for `catalog.risk.identity_records` under
   `pattern_detection`, which isn't in that task's permitted sources), plain
-  `denied_sources` (`kyc_agent` reaching for `risk_models`, explicitly denied), and the
-  plain `allowed_sources` gap (`kyc_agent` reaching for `transaction_history`, never
+  `denied_sources` (`kyc_agent` reaching for `catalog.risk.risk_models`, explicitly
+  denied), and the plain `allowed_sources` gap (`kyc_agent` reaching for
+  `catalog.risk.transaction_history`, never
   listed either way for that role).
 - **The *proposed* disposition always matches the case's ground truth** in
   `aml_case_data.py` (`get_expected_outcome`) regardless of which denials occurred

@@ -114,15 +114,16 @@ call — see §2 on why this demo has no routing decision to make.
 - **A real bug caught during verification**: `compliance_officer`'s
   `get_regulatory_filings` tool was initially bound to `task_type="sar_filing"`, but
   `sar_filing`'s `task_bindings.permitted_sources` doesn't include
-  `regulatory_filings` (only `policy_validation`/`compliance_review`/`sox_review` do)
-  — meaning that tool was denied on every single call regardless of model behavior,
-  contradicting the "denials aren't scripted" design. Fixed to `task_type=
-  "compliance_review"`, whose `permitted_sources` does include `regulatory_filings`;
-  re-verified live afterward (§10).
-- `compliance_officer` is the broadest role and reaches into `client_profile`/
-  `portfolio_holdings` (not just risk-catalog sources) for cross-client audit — the
-  one role in this demo authorized across both data domains, same nuance the source
-  `institutional_portfolio_review` policy modeled for this role.
+  `catalog.risk.regulatory_filings` (only `policy_validation`/`compliance_review`/
+  `sox_review` do) — meaning that tool was denied on every single call regardless of
+  model behavior, contradicting the "denials aren't scripted" design. Fixed to
+  `task_type="compliance_review"`, whose `permitted_sources` does include
+  `catalog.risk.regulatory_filings`; re-verified live afterward (§10).
+- `compliance_officer` is the broadest role and reaches into
+  `catalog.wealth.client_profile`/`catalog.wealth.portfolio_holdings` (not just
+  risk-catalog sources) for cross-client audit — the one role in this demo authorized
+  across both data domains, same nuance the source `institutional_portfolio_review`
+  policy modeled for this role.
 
 ### 7.3 Decision node — rule-based, grounded in real signal data
 
@@ -139,9 +140,9 @@ viewer's reviewer decides for real.
 | AutoPIL mechanism | What this demo exercises |
 |---|---|
 | `guard.protect()` role/source matrix | Every tool call, in-scope or not, across all 3 roles |
-| `task_bindings` (purpose limitation) | e.g. `aml_investigator` reaching for `identity_records` under `pattern_detection` — not in that task's permitted sources, denied regardless of `identity_records` never being in `allowed_sources` at all either |
+| `task_bindings` (purpose limitation) | e.g. `aml_investigator` reaching for `catalog.risk.identity_records` under `pattern_detection` — not in that task's permitted sources, denied regardless of `catalog.risk.identity_records` never being in `allowed_sources` at all either |
 | Sensitivity ceiling + `sensitivity_decay` | `kyc_agent_policy` has the longest `session_ttl_minutes` (240) and deepest decay (medium at 60 min, low at 120 min) of the three — a real KYC refresh workflow runs longer than a single investigation step |
-| Cross-catalog reach | `compliance_officer_policy` is the only one of the three authorized for `client_profile`/`portfolio_holdings`, not just risk-catalog sources |
+| Cross-catalog reach | `compliance_officer_policy` is the only one of the three authorized for `catalog.wealth.client_profile`/`catalog.wealth.portfolio_holdings`, not just risk-catalog sources |
 | Audit trail | `guard.get_audit_trail()` per session, same mechanism as every other demo |
 
 ## 9. Scenarios
@@ -205,30 +206,27 @@ covers what was verified, not setup steps.
 Verified live against the same real trial tenant used for the other 3 demos
 (`https://autopil-api.onrender.com`, 2026-07-10):
 
-1. **`aml_investigator_policy` matches the local YAML byte-for-byte.**
-   `kyc_agent_policy` matches except one extra denied source
-   (`application_forms` — harmless, this demo never reaches for it).
-   `compliance_officer_policy` has real, disclosed drift: the hosted version's
-   `allowed_sources` additionally includes `loan_history`/`portfolio_metrics` (present
-   in the *original* `institutional_portfolio_review` policy this demo's policy was
-   split from, but trimmed here since no tool exercises them), and its `sar_filing`/
-   `cross_client_audit`/`fiduciary_review` task_bindings differ slightly. Reused as-is
-   rather than creating a dedicated policy (unlike `institutional_portfolio_review`,
-   which had to) — deliberate: `compliance_officer` ends up with marginally *broader*
-   real access remotely than locally, never narrower, so no local-mode-only denial
-   becomes a false ALLOW.
+1. **Source names now use `catalog.wealth.*`/`catalog.risk.*` FQNs**, matching
+   `institutional_portfolio_review`'s convention instead of this demo's original plain
+   names. The shared tenant's pre-seeded `aml_investigator_policy`/`kyc_agent_policy`/
+   `compliance_officer_policy` still use plain names, so `ensure_policy()` now creates
+   3 dedicated `demo_aml_<role>_policy` policies instead of reusing anything
+   pre-seeded — same reasoning `institutional_portfolio_review`'s `ipr_saas_guard.py`
+   already applied for its own 8 roles. **Not yet re-verified live against the hosted
+   API** — the "verified live" claims elsewhere in this doc predate the rename; the
+   next SaaS-mode run against the real trial tenant should confirm the 3 new policies
+   get created correctly and produce the same denial shapes as local mode before this
+   note is upgraded to a live-verified one.
 2. **None of this demo's 3 roles collide with another demo's role name** on the
    shared trial tenant (checked directly against the full policy list) — the generic
    `owner_tag="autopil-langgraph-demos"` is safe to reuse here, unlike
    `institutional_portfolio_review`'s `wealth_advisor`, which does collide with
    `client_analysis`'s role of the same name.
-3. **A live full-case run** (AML-001, structuring, via Ollama) against the hosted API
-   produced the exact same disposition as local mode (`SAR REQUIRED — structuring
-   pattern confirmed`) and the same shape of real denials (`task_bindings` purpose
-   limitation, plain `denied_sources`), including one denial specifically caused by
-   `compliance_officer_policy`'s disclosed drift (`get_client_profile` denied under
-   `cross_client_audit` — a stricter binding on the hosted side than this demo's own
-   local YAML has).
+3. **A live full-case run** (AML-001, structuring, via Ollama) against the hosted API,
+   prior to the FQN rename, produced the exact same disposition as local mode (`SAR
+   REQUIRED — structuring pattern confirmed`) and the same shape of real denials
+   (`task_bindings` purpose limitation, plain `denied_sources`) — worth re-running
+   post-rename to confirm parity still holds against the new dedicated policies.
 4. **Module name collision, caught live**: this demo's `saas_guard.py` was originally
    named identically to the other 3 demos' copies — collided under `langgraph dev`
    the moment `institutional_portfolio_review`'s copy diverged in shape (gained an

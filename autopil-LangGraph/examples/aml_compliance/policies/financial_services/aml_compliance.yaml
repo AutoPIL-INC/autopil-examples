@@ -1,11 +1,10 @@
-# Consolidated AML & Compliance policy — split out of
-# institutional_portfolio_review's two-file setup (portfolio_review_wealth.yaml +
-# portfolio_review_risk.yaml), where these 3 roles' policies previously lived split
-# across both files despite being one coherent financial-crime-governance workflow
-# (kyc_agent_policy in particular lived in the *wealth* file even though 100% of its
-# allowed_sources are risk-catalog data). One file, one tenant-scoped policy, plain
-# source names (no catalog.wealth/catalog.risk split) — matching
-# fraud_investigation.yaml's convention, this demo's closest sibling.
+# Consolidated AML & Compliance policy — one file, one tenant-scoped policy, source
+# names use the same catalog.wealth.*/catalog.risk.* FQNs as
+# institutional_portfolio_review's two policy files (the same Unity Catalog tables:
+# client_profile, portfolio_holdings, credit_scores, loan_history, delinquency_records,
+# counterparty_data, and executive_communications are literally the same sources
+# referenced there). compliance_officer is the one role here authorized across both
+# catalogs, same nuance as institutional_portfolio_review's own cross-catalog roles.
 industry: financial_services
 organization: Fraud_Financial_Crime
 division: Fraud & Financial Crime
@@ -16,24 +15,24 @@ regulations:
     name: "Bank Secrecy Act — Anti-Money Laundering (31 CFR Part 1020)"
     applicable_rules:
       - rule: "31 CFR 1020.320 — Suspicious Activity Report (SAR) filing"
-        how_enforced: "aml_investigator_policy task_bindings bind sar_generation to transaction_history, account_summaries, watchlist only; compliance_officer_policy task_bindings bind sar_filing to transaction_history, account_summaries, audit_logs"
+        how_enforced: "aml_investigator_policy task_bindings bind sar_generation to catalog.risk.transaction_history, catalog.risk.account_summaries, catalog.risk.watchlist only; compliance_officer_policy task_bindings bind sar_filing to catalog.risk.transaction_history, catalog.risk.account_summaries, catalog.risk.audit_logs"
       - rule: "AML investigation role isolation — transaction and watchlist data segregated from other roles"
-        how_enforced: "aml_investigator_policy denied_sources blocks personal_hr_records-class data; kyc_agent_policy denied_sources blocks risk_models; require_task_for_sensitivity: high on all three roles"
+        how_enforced: "aml_investigator_policy denied_sources blocks personal_hr_records-class data; kyc_agent_policy denied_sources blocks catalog.risk.risk_models; require_task_for_sensitivity: high on all three roles"
   - id: FINCEN-CDD
     name: "FinCEN Customer Due Diligence Rule (31 CFR 1010.230)"
     applicable_rules:
       - rule: "Beneficial ownership and identity verification for high-risk accounts"
-        how_enforced: "kyc_agent_policy task_bindings bind identity_verification to identity_records only; session_ttl: 240 minutes with sensitivity_decay reducing the ceiling to medium at 60 min, low at 120 min"
+        how_enforced: "kyc_agent_policy task_bindings bind identity_verification to catalog.risk.identity_records only; session_ttl: 240 minutes with sensitivity_decay reducing the ceiling to medium at 60 min, low at 120 min"
   - id: OFAC
     name: "OFAC Sanctions Screening Requirements"
     applicable_rules:
       - rule: "Watchlist-based entity resolution and sanctions screening scoped to identity/watchlist data only"
-        how_enforced: "aml_investigator_policy task_bindings bind entity_resolution to watchlist and counterparty_data only; kyc_agent_policy task_bindings bind sanctions_screening to identity_records and loan_history only"
+        how_enforced: "aml_investigator_policy task_bindings bind entity_resolution to catalog.risk.watchlist and catalog.risk.counterparty_data only; kyc_agent_policy task_bindings bind sanctions_screening to catalog.risk.identity_records and catalog.risk.loan_history only"
   - id: SOX
     name: "Sarbanes-Oxley Act — Sections 302 and 404"
     applicable_rules:
       - rule: "Annual review of internal controls over financial reporting"
-        how_enforced: "compliance_officer_policy task_bindings bind sox_review to audit_logs, regulatory_filings, account_summaries only; executive_communications denied"
+        how_enforced: "compliance_officer_policy task_bindings bind sox_review to catalog.risk.audit_logs, catalog.risk.regulatory_filings, catalog.risk.account_summaries only; catalog.wealth.executive_communications denied"
   - id: FINRA-4511
     name: "FINRA Rules 4511/4512 — Books and Records"
     applicable_rules:
@@ -48,14 +47,14 @@ policies:
     description: "Transaction and watchlist analysis for AML; strict isolation from identity/KYC and unrelated internal data"
     agent_role: aml_investigator
     allowed_sources:
-      - transaction_history
-      - watchlist
-      - counterparty_data
-      - account_summaries
-      - delinquency_records
+      - catalog.risk.transaction_history
+      - catalog.risk.watchlist
+      - catalog.risk.counterparty_data
+      - catalog.risk.account_summaries
+      - catalog.risk.delinquency_records
     denied_sources:
-      - risk_models
-      - executive_communications
+      - catalog.risk.risk_models
+      - catalog.wealth.executive_communications
     allowed_tasks:
       - sar_generation
       - case_escalation
@@ -69,13 +68,13 @@ policies:
     require_task_for_sensitivity: high
     task_bindings:
       - task: sar_generation
-        permitted_sources: [transaction_history, account_summaries, watchlist]
+        permitted_sources: [catalog.risk.transaction_history, catalog.risk.account_summaries, catalog.risk.watchlist]
       - task: case_escalation
-        permitted_sources: [account_summaries, counterparty_data]
+        permitted_sources: [catalog.risk.account_summaries, catalog.risk.counterparty_data]
       - task: entity_resolution
-        permitted_sources: [watchlist, counterparty_data]
+        permitted_sources: [catalog.risk.watchlist, catalog.risk.counterparty_data]
       - task: pattern_detection
-        permitted_sources: [transaction_history, watchlist, counterparty_data, delinquency_records]
+        permitted_sources: [catalog.risk.transaction_history, catalog.risk.watchlist, catalog.risk.counterparty_data, catalog.risk.delinquency_records]
     session_ttl_minutes: 60
     sensitivity_decay:
       - after_minutes: 30
@@ -91,12 +90,12 @@ policies:
     description: "Identity verification and sanctions screening; no transaction data or internal risk models"
     agent_role: kyc_agent
     allowed_sources:
-      - identity_records
-      - loan_history
-      - credit_scores
+      - catalog.risk.identity_records
+      - catalog.risk.loan_history
+      - catalog.risk.credit_scores
     denied_sources:
-      - risk_models
-      - executive_communications
+      - catalog.risk.risk_models
+      - catalog.wealth.executive_communications
     allowed_tasks:
       - identity_verification
       - kyc_check
@@ -108,11 +107,11 @@ policies:
     require_task_for_sensitivity: high
     task_bindings:
       - task: identity_verification
-        permitted_sources: [identity_records]
+        permitted_sources: [catalog.risk.identity_records]
       - task: kyc_check
-        permitted_sources: [credit_scores, loan_history, identity_records]
+        permitted_sources: [catalog.risk.credit_scores, catalog.risk.loan_history, catalog.risk.identity_records]
       - task: sanctions_screening
-        permitted_sources: [identity_records, loan_history]
+        permitted_sources: [catalog.risk.identity_records, catalog.risk.loan_history]
     session_ttl_minutes: 240
     sensitivity_decay:
       - after_minutes: 60
@@ -121,22 +120,23 @@ policies:
         max_sensitivity: low
 
   # Compliance officer — broadest access of the three; sign-off role for the case.
-  # Reaches into client-profile/portfolio data (not just risk-catalog sources) for
-  # cross-client audit — the one role in this demo authorized across both data
-  # domains, same nuance the source institutional_portfolio_review policy modeled.
+  # Reaches into catalog.wealth.client_profile/catalog.wealth.portfolio_holdings (not
+  # just risk-catalog sources) for cross-client audit — the one role in this demo
+  # authorized across both data domains, same nuance the source
+  # institutional_portfolio_review policy modeled.
   - name: compliance_officer_policy
     description: "Broad audit, regulatory, and cross-client review access; restricted from executive communications"
     agent_role: compliance_officer
     allowed_sources:
-      - account_summaries
-      - credit_scores
-      - audit_logs
-      - regulatory_filings
-      - transaction_history
-      - client_profile
-      - portfolio_holdings
+      - catalog.risk.account_summaries
+      - catalog.risk.credit_scores
+      - catalog.risk.audit_logs
+      - catalog.risk.regulatory_filings
+      - catalog.risk.transaction_history
+      - catalog.wealth.client_profile
+      - catalog.wealth.portfolio_holdings
     denied_sources:
-      - executive_communications
+      - catalog.wealth.executive_communications
     allowed_tasks:
       - sox_review
       - sar_filing
@@ -151,17 +151,17 @@ policies:
     require_task_for_sensitivity: high
     task_bindings:
       - task: sox_review
-        permitted_sources: [audit_logs, regulatory_filings, account_summaries]
+        permitted_sources: [catalog.risk.audit_logs, catalog.risk.regulatory_filings, catalog.risk.account_summaries]
       - task: sar_filing
-        permitted_sources: [transaction_history, account_summaries, audit_logs]
+        permitted_sources: [catalog.risk.transaction_history, catalog.risk.account_summaries, catalog.risk.audit_logs]
       - task: policy_validation
-        permitted_sources: [regulatory_filings, audit_logs]
+        permitted_sources: [catalog.risk.regulatory_filings, catalog.risk.audit_logs]
       - task: compliance_review
-        permitted_sources: [account_summaries, regulatory_filings, audit_logs]
+        permitted_sources: [catalog.risk.account_summaries, catalog.risk.regulatory_filings, catalog.risk.audit_logs]
       - task: cross_client_audit
-        permitted_sources: [account_summaries, client_profile, portfolio_holdings, credit_scores]
+        permitted_sources: [catalog.risk.account_summaries, catalog.wealth.client_profile, catalog.wealth.portfolio_holdings, catalog.risk.credit_scores]
       - task: fiduciary_review
-        permitted_sources: [portfolio_holdings, client_profile]
+        permitted_sources: [catalog.wealth.portfolio_holdings, catalog.wealth.client_profile]
     session_ttl_minutes: 60
     sensitivity_decay:
       - after_minutes: 30

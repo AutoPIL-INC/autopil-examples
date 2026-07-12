@@ -81,18 +81,81 @@ def _register_agents() -> None:
 
 
 # Hosted AutoPIL SaaS trial mode — opt in by setting both AUTOPIL_ADMIN_KEY and
-# AUTOPIL_EVALUATE_KEY (same explicit-opt-in pattern as the other 3 demos). Verified
-# live against a real trial tenant — see aml_saas_guard.py's module docstring for
-# what's confirmed, including a disclosed minor content difference for
-# compliance_officer_policy. Falls back to the embedded, local ContextGuard otherwise.
+# AUTOPIL_EVALUATE_KEY (same explicit-opt-in pattern as the other 3 demos). Falls back
+# to the embedded, local ContextGuard otherwise. Since this demo's source names use
+# catalog.wealth.*/catalog.risk.* FQNs (not the shared tenant's pre-seeded plain-name
+# policies), ensure_policy() below creates 3 dedicated demo_aml_<role>_policy policies
+# instead of reusing anything pre-seeded — same reasoning as
+# institutional_portfolio_review's ipr_saas_guard.py. See aml_saas_guard.py's module
+# docstring for what's confirmed live.
 _SAAS_MODE = bool(os.getenv("AUTOPIL_ADMIN_KEY")) and bool(os.getenv("AUTOPIL_EVALUATE_KEY"))
 
+# Field-for-field translation of policies/financial_services/aml_compliance.yaml into
+# CreatePolicyRequest bodies — source names kept exactly as this demo already sends
+# them (catalog.wealth.*/catalog.risk.* prefixed), so no other code here needs to
+# change for SaaS mode. session_ttl_minutes/sensitivity_decay are omitted — no such
+# field exists on this endpoint (confirmed against the real OpenAPI schema, per
+# ipr_saas_guard.py's ensure_policy() docstring).
+_POLICY_SPECS = {
+    "aml_investigator": {
+        "description": "Transaction and watchlist analysis for AML; strict isolation from identity/KYC and unrelated internal data",
+        "allowed_sources": ["catalog.risk.transaction_history", "catalog.risk.watchlist",
+                             "catalog.risk.counterparty_data", "catalog.risk.account_summaries",
+                             "catalog.risk.delinquency_records"],
+        "denied_sources": ["catalog.risk.risk_models", "catalog.wealth.executive_communications"],
+        "allowed_tasks": ["sar_generation", "case_escalation", "entity_resolution", "pattern_detection"],
+        "denied_tasks": ["credit_decision", "account_freeze", "product_recommendation"],
+        "max_sensitivity": "critical", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "sar_generation", "permitted_sources": ["catalog.risk.transaction_history", "catalog.risk.account_summaries", "catalog.risk.watchlist"]},
+            {"task": "case_escalation", "permitted_sources": ["catalog.risk.account_summaries", "catalog.risk.counterparty_data"]},
+            {"task": "entity_resolution", "permitted_sources": ["catalog.risk.watchlist", "catalog.risk.counterparty_data"]},
+            {"task": "pattern_detection", "permitted_sources": ["catalog.risk.transaction_history", "catalog.risk.watchlist", "catalog.risk.counterparty_data", "catalog.risk.delinquency_records"]},
+        ],
+    },
+    "kyc_agent": {
+        "description": "Identity verification and sanctions screening; no transaction data or internal risk models",
+        "allowed_sources": ["catalog.risk.identity_records", "catalog.risk.loan_history", "catalog.risk.credit_scores"],
+        "denied_sources": ["catalog.risk.risk_models", "catalog.wealth.executive_communications"],
+        "allowed_tasks": ["identity_verification", "kyc_check", "sanctions_screening"],
+        "denied_tasks": ["credit_decision", "account_freeze"],
+        "max_sensitivity": "high", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "identity_verification", "permitted_sources": ["catalog.risk.identity_records"]},
+            {"task": "kyc_check", "permitted_sources": ["catalog.risk.credit_scores", "catalog.risk.loan_history", "catalog.risk.identity_records"]},
+            {"task": "sanctions_screening", "permitted_sources": ["catalog.risk.identity_records", "catalog.risk.loan_history"]},
+        ],
+    },
+    "compliance_officer": {
+        "description": "Broad audit, regulatory, and cross-client review access; restricted from executive communications",
+        "allowed_sources": ["catalog.risk.account_summaries", "catalog.risk.credit_scores", "catalog.risk.audit_logs",
+                             "catalog.risk.regulatory_filings", "catalog.risk.transaction_history",
+                             "catalog.wealth.client_profile", "catalog.wealth.portfolio_holdings"],
+        "denied_sources": ["catalog.wealth.executive_communications"],
+        "allowed_tasks": ["sox_review", "sar_filing", "policy_validation", "compliance_review",
+                           "cross_client_audit", "fiduciary_review"],
+        "denied_tasks": ["credit_decision", "account_freeze"],
+        "max_sensitivity": "critical", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "sox_review", "permitted_sources": ["catalog.risk.audit_logs", "catalog.risk.regulatory_filings", "catalog.risk.account_summaries"]},
+            {"task": "sar_filing", "permitted_sources": ["catalog.risk.transaction_history", "catalog.risk.account_summaries", "catalog.risk.audit_logs"]},
+            {"task": "policy_validation", "permitted_sources": ["catalog.risk.regulatory_filings", "catalog.risk.audit_logs"]},
+            {"task": "compliance_review", "permitted_sources": ["catalog.risk.account_summaries", "catalog.risk.regulatory_filings", "catalog.risk.audit_logs"]},
+            {"task": "cross_client_audit", "permitted_sources": ["catalog.risk.account_summaries", "catalog.wealth.client_profile", "catalog.wealth.portfolio_holdings", "catalog.risk.credit_scores"]},
+            {"task": "fiduciary_review", "permitted_sources": ["catalog.wealth.portfolio_holdings", "catalog.wealth.client_profile"]},
+        ],
+    },
+}
+
 if _SAAS_MODE:
-    from aml_saas_guard import RemoteContextGuard, bootstrap_agents
+    from aml_saas_guard import RemoteContextGuard, bootstrap_agents, ensure_policy
     _API_URL = os.getenv("AUTOPIL_API_URL", "https://autopil-api.onrender.com")
+    for role, spec in _POLICY_SPECS.items():
+        ensure_policy(_API_URL, os.environ["AUTOPIL_ADMIN_KEY"], f"demo_aml_{role}_policy", role, spec)
     AGENT_IDS.update(bootstrap_agents(
         _API_URL, os.environ["AUTOPIL_ADMIN_KEY"], roles=list(AGENT_IDS),
         owner_tag="autopil-langgraph-demos",
+        policy_name_for=lambda role: f"demo_aml_{role}_policy",
     ))
     guard = RemoteContextGuard(_API_URL, os.environ["AUTOPIL_EVALUATE_KEY"], os.environ["AUTOPIL_ADMIN_KEY"])
 else:
@@ -140,21 +203,23 @@ def _reset_sessions() -> None:
 _reset_sessions()
 
 # ── data sources ──────────────────────────────────────────────────────────────────
+# Source names use the same catalog.wealth.*/catalog.risk.* FQNs as
+# institutional_portfolio_review — these are the same Unity Catalog tables.
 SOURCES = {
-    "transaction_history":      data.TRANSACTION_HISTORY,
-    "watchlist":                data.WATCHLIST,
-    "counterparty_data":        data.COUNTERPARTY_DATA,
-    "account_summaries":        data.ACCOUNT_SUMMARIES,
-    "delinquency_records":      data.DELINQUENCY_RECORDS,
-    "identity_records":         data.IDENTITY_RECORDS,
-    "loan_history":             data.LOAN_HISTORY,
-    "credit_scores":            data.CREDIT_SCORES,
-    "audit_logs":                data.AUDIT_LOGS,
-    "regulatory_filings":       data.REGULATORY_FILINGS,
-    "client_profile":           data.CLIENT_PROFILE,
-    "portfolio_holdings":       data.PORTFOLIO_HOLDINGS,
-    "risk_models":              data.RISK_MODELS,
-    "executive_communications": data.EXECUTIVE_COMMUNICATIONS,
+    "catalog.risk.transaction_history":        data.TRANSACTION_HISTORY,
+    "catalog.risk.watchlist":                  data.WATCHLIST,
+    "catalog.risk.counterparty_data":          data.COUNTERPARTY_DATA,
+    "catalog.risk.account_summaries":          data.ACCOUNT_SUMMARIES,
+    "catalog.risk.delinquency_records":        data.DELINQUENCY_RECORDS,
+    "catalog.risk.identity_records":           data.IDENTITY_RECORDS,
+    "catalog.risk.loan_history":                data.LOAN_HISTORY,
+    "catalog.risk.credit_scores":               data.CREDIT_SCORES,
+    "catalog.risk.audit_logs":                  data.AUDIT_LOGS,
+    "catalog.risk.regulatory_filings":          data.REGULATORY_FILINGS,
+    "catalog.wealth.client_profile":            data.CLIENT_PROFILE,
+    "catalog.wealth.portfolio_holdings":        data.PORTFOLIO_HOLDINGS,
+    "catalog.risk.risk_models":                 data.RISK_MODELS,
+    "catalog.wealth.executive_communications":  data.EXECUTIVE_COMMUNICATIONS,
 }
 
 
@@ -203,13 +268,13 @@ def aml_investigator_tools(account_id_hint: str) -> list:
     acc = f"Call with key='{account_id_hint}' (the account_id)."
     _OVERSCOPE = "pattern_detection"
     return [
-        _build_tool("get_transaction_history", f"Transaction history for an account. {acc}", role, "transaction_history", SensitivityLevel.CRITICAL, role, aid, "pattern_detection"),
-        _build_tool("get_watchlist_screening", f"OFAC/SDN watchlist screening result for an account. {acc}", role, "watchlist", SensitivityLevel.HIGH, role, aid, "entity_resolution"),
-        _build_tool("get_counterparty_data", "Counterparty and settlement data. Call with no key.", role, "counterparty_data", SensitivityLevel.MEDIUM, role, aid, "entity_resolution"),
-        _build_tool("get_account_summary", f"Account summary — type, AUM, flags. {acc}", role, "account_summaries", SensitivityLevel.MEDIUM, role, aid, "sar_generation"),
-        _build_tool("get_delinquency_records", f"Delinquency status on credit facilities. {acc}", role, "delinquency_records", SensitivityLevel.MEDIUM, role, aid, "pattern_detection"),
+        _build_tool("get_transaction_history", f"Transaction history for an account. {acc}", role, "catalog.risk.transaction_history", SensitivityLevel.CRITICAL, role, aid, "pattern_detection"),
+        _build_tool("get_watchlist_screening", f"OFAC/SDN watchlist screening result for an account. {acc}", role, "catalog.risk.watchlist", SensitivityLevel.HIGH, role, aid, "entity_resolution"),
+        _build_tool("get_counterparty_data", "Counterparty and settlement data. Call with no key.", role, "catalog.risk.counterparty_data", SensitivityLevel.MEDIUM, role, aid, "entity_resolution"),
+        _build_tool("get_account_summary", f"Account summary — type, AUM, flags. {acc}", role, "catalog.risk.account_summaries", SensitivityLevel.MEDIUM, role, aid, "sar_generation"),
+        _build_tool("get_delinquency_records", f"Delinquency status on credit facilities. {acc}", role, "catalog.risk.delinquency_records", SensitivityLevel.MEDIUM, role, aid, "pattern_detection"),
         # over-scope: NOT in aml_investigator_policy.allowed_sources
-        _build_tool("get_identity_records", f"KYC identity verification status for the account holder. {acc}", role, "identity_records", SensitivityLevel.HIGH, role, aid, _OVERSCOPE),
+        _build_tool("get_identity_records", f"KYC identity verification status for the account holder. {acc}", role, "catalog.risk.identity_records", SensitivityLevel.HIGH, role, aid, _OVERSCOPE),
     ]
 
 
@@ -218,13 +283,13 @@ def kyc_agent_tools(account_id_hint: str) -> list:
     acc = f"Call with key='{account_id_hint}' (the account_id)."
     _OVERSCOPE = "identity_verification"
     return [
-        _build_tool("get_identity_records", f"KYC identity verification status for the account holder. {acc}", role, "identity_records", SensitivityLevel.HIGH, role, aid, "identity_verification"),
-        _build_tool("get_loan_history", f"Credit facilities and loan history. {acc}", role, "loan_history", SensitivityLevel.HIGH, role, aid, "kyc_check"),
-        _build_tool("get_credit_scores", f"Institutional credit rating. {acc}", role, "credit_scores", SensitivityLevel.HIGH, role, aid, "kyc_check"),
+        _build_tool("get_identity_records", f"KYC identity verification status for the account holder. {acc}", role, "catalog.risk.identity_records", SensitivityLevel.HIGH, role, aid, "identity_verification"),
+        _build_tool("get_loan_history", f"Credit facilities and loan history. {acc}", role, "catalog.risk.loan_history", SensitivityLevel.HIGH, role, aid, "kyc_check"),
+        _build_tool("get_credit_scores", f"Institutional credit rating. {acc}", role, "catalog.risk.credit_scores", SensitivityLevel.HIGH, role, aid, "kyc_check"),
         # over-scope: explicitly denied
-        _build_tool("get_risk_models", "Internal AML typology risk models. Call with no key.", role, "risk_models", SensitivityLevel.CRITICAL, role, aid, _OVERSCOPE),
+        _build_tool("get_risk_models", "Internal AML typology risk models. Call with no key.", role, "catalog.risk.risk_models", SensitivityLevel.CRITICAL, role, aid, _OVERSCOPE),
         # over-scope: NOT in kyc_agent_policy.allowed_sources
-        _build_tool("get_transaction_history", f"Full transaction history for an account. {acc}", role, "transaction_history", SensitivityLevel.CRITICAL, role, aid, _OVERSCOPE),
+        _build_tool("get_transaction_history", f"Full transaction history for an account. {acc}", role, "catalog.risk.transaction_history", SensitivityLevel.CRITICAL, role, aid, _OVERSCOPE),
     ]
 
 
@@ -233,15 +298,15 @@ def compliance_officer_tools(account_id_hint: str) -> list:
     acc = f"Call with key='{account_id_hint}' (the account_id)."
     _OVERSCOPE = "compliance_review"
     return [
-        _build_tool("get_account_summary", f"Account summary — type, AUM, flags. {acc}", role, "account_summaries", SensitivityLevel.MEDIUM, role, aid, "compliance_review"),
-        _build_tool("get_credit_scores", f"Institutional credit rating. {acc}", role, "credit_scores", SensitivityLevel.HIGH, role, aid, "cross_client_audit"),
-        _build_tool("get_audit_logs", "Internal audit-log integrity check summaries. Call with no key.", role, "audit_logs", SensitivityLevel.CRITICAL, role, aid, "sox_review"),
-        _build_tool("get_regulatory_filings", f"SAR filing history for an account. {acc}", role, "regulatory_filings", SensitivityLevel.HIGH, role, aid, "compliance_review"),
-        _build_tool("get_transaction_history", f"Full transaction history for an account. {acc}", role, "transaction_history", SensitivityLevel.CRITICAL, role, aid, "sar_filing"),
-        _build_tool("get_client_profile", f"Client profile — entity type, relationship manager. {acc}", role, "client_profile", SensitivityLevel.MEDIUM, role, aid, "cross_client_audit"),
-        _build_tool("get_portfolio_holdings", f"Portfolio holdings and asset mix. {acc}", role, "portfolio_holdings", SensitivityLevel.HIGH, role, aid, "fiduciary_review"),
+        _build_tool("get_account_summary", f"Account summary — type, AUM, flags. {acc}", role, "catalog.risk.account_summaries", SensitivityLevel.MEDIUM, role, aid, "compliance_review"),
+        _build_tool("get_credit_scores", f"Institutional credit rating. {acc}", role, "catalog.risk.credit_scores", SensitivityLevel.HIGH, role, aid, "cross_client_audit"),
+        _build_tool("get_audit_logs", "Internal audit-log integrity check summaries. Call with no key.", role, "catalog.risk.audit_logs", SensitivityLevel.CRITICAL, role, aid, "sox_review"),
+        _build_tool("get_regulatory_filings", f"SAR filing history for an account. {acc}", role, "catalog.risk.regulatory_filings", SensitivityLevel.HIGH, role, aid, "compliance_review"),
+        _build_tool("get_transaction_history", f"Full transaction history for an account. {acc}", role, "catalog.risk.transaction_history", SensitivityLevel.CRITICAL, role, aid, "sar_filing"),
+        _build_tool("get_client_profile", f"Client profile — entity type, relationship manager. {acc}", role, "catalog.wealth.client_profile", SensitivityLevel.MEDIUM, role, aid, "cross_client_audit"),
+        _build_tool("get_portfolio_holdings", f"Portfolio holdings and asset mix. {acc}", role, "catalog.wealth.portfolio_holdings", SensitivityLevel.HIGH, role, aid, "fiduciary_review"),
         # over-scope: explicitly denied
-        _build_tool("get_executive_communications", "Executive/committee communications. Call with no key.", role, "executive_communications", SensitivityLevel.CRITICAL, role, aid, _OVERSCOPE),
+        _build_tool("get_executive_communications", "Executive/committee communications. Call with no key.", role, "catalog.wealth.executive_communications", SensitivityLevel.CRITICAL, role, aid, _OVERSCOPE),
     ]
 
 
@@ -285,13 +350,24 @@ class DenialEvent(TypedDict):
 
 def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
                    tools: list, denial_log: list[DenialEvent], llm) -> tuple[Optional[Finding], list[DenialEvent]]:
-    """Run one role's tool-calling loop to completion (or MAX_TOOL_TURNS)."""
+    """Run one role's tool-calling loop to completion (or MAX_TOOL_TURNS).
+
+    Live-observed (not just a smaller-toolbelt theoretical risk — this actually
+    happened on a Claude run of AML-002): a model that calls one tool per turn
+    instead of batching several can burn through all of MAX_TOOL_TURNS just
+    gathering data, leaving no turn to call submit_finding, even with a toolbelt
+    as small as 5-8 tools. The plain "call a tool or conclude" nudge only fires
+    when a turn calls zero tools, which never happens if the model is
+    methodically working through its toolbelt one call at a time — so an
+    escalating nudge fires after *every* turn without a finding, same fix
+    institutional_portfolio_review already needed for its 32-tool toolbelt.
+    """
     tool_map = {t.name: t for t in tools}
     bound = llm.bind_tools([*tools, _FINDING_TOOL_SCHEMA])
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_brief)]
     local_denials: list[DenialEvent] = []
 
-    for _ in range(MAX_TOOL_TURNS):
+    for turn in range(MAX_TOOL_TURNS):
         response = bound.invoke(messages)
         messages.append(response)
 
@@ -330,6 +406,17 @@ def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
         if finding is not None:
             denial_log.extend(local_denials)
             return finding, local_denials
+
+        turns_left = MAX_TOOL_TURNS - turn - 1
+        if turns_left <= 1:
+            messages.append(HumanMessage(
+                content="You must call submit_finding now, based on what you've gathered so far. Do not call any more data tools."
+            ))
+        else:
+            messages.append(HumanMessage(
+                content="You now have results from the tools you called. If you have enough to respond, call "
+                        "submit_finding now instead of calling more tools."
+            ))
 
     denial_log.extend(local_denials)
     print(f"      [warn]    {agent_role} exhausted {MAX_TOOL_TURNS} turns without submit_finding")
@@ -393,7 +480,11 @@ def _run_role(role: str, state: AMLCaseState) -> dict:
     denial_log = list(state["denial_log"])
     finding, _ = run_tool_loop(role, f"You are a {role.replace('_',' ')} at a bank's financial crimes unit.",
                                 brief, tools, denial_log, _make_llm(state["provider"]))
-    finding = finding or {"summary": "No finding submitted", "recommendation": "UNKNOWN"}
+    finding = finding or {
+        "summary": f"{role.replace('_', ' ').title()} did not reach a conclusion within the "
+                    f"allotted tool-calling turns for this step.",
+        "recommendation": "INCONCLUSIVE",
+    }
     findings = dict(state["findings"])
     findings[role] = finding
     roles_completed = [*state["roles_completed"], role]
