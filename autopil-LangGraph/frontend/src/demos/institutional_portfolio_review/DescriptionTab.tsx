@@ -72,7 +72,7 @@ export default function DescriptionTab() {
           <p>
             <code>quarterly_review</code> is the flagship chain — Investment Analyst →
             Wealth Advisor → Rebalancing Agent → Report Generator, capped at 4 roles
-            deliberately. The other 4 review types run 1 to 3 roles each. Outcome
+            deliberately. The other 3 review types run 1 to 2 roles each. Outcome
             classification is
             grounded in each role's real audit trail, not its self-report, before a
             supervisor approves or overrides the final outcome.
@@ -107,7 +107,7 @@ export default function DescriptionTab() {
               <div className="flow-box-sub">quarterly_review</div>
             </div>
           </div>
-          <div className="flow-branch-label">the other 4 review types are shorter — 1 to 3 roles each</div>
+          <div className="flow-branch-label">the other 3 review types are shorter — 1 to 2 roles each</div>
           <div className="flow-arrow-down" />
           <div className="flow-box flow-review">
             <div className="flow-box-title">Orchestrator Review</div>
@@ -127,7 +127,7 @@ export default function DescriptionTab() {
       </section>
 
       <section className="desc-section">
-        <h2>The 5 review types</h2>
+        <h2>The 4 review types</h2>
         <div className="case-grid">
           {REQUEST_IDS.map((requestId) => {
             const info = REQUEST_INFO[requestId];

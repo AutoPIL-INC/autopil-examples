@@ -100,9 +100,11 @@ export const OVERRIDE_ACTIONS = [
   "REJECT — return to originating role for rework",
 ] as const;
 
-export const REQUEST_IDS = ["PORT-001", "PORT-002", "PORT-003", "PORT-004", "PORT-005"] as const;
+export const REQUEST_IDS = ["PORT-001", "PORT-002", "PORT-004", "PORT-005"] as const;
 
 // See portfolio_review_uc_data.py's PORTFOLIO_REVIEW_REQUESTS for the underlying brief text.
+// PORT-003 (AML Case & Compliance Audit) moved to the aml_compliance demo along with
+// the aml_case review type — see that demo's DESIGN.md for the split rationale.
 export const REQUEST_INFO: Record<(typeof REQUEST_IDS)[number], { title: string; description: string; estimatedTime: string }> = {
   "PORT-001": {
     title: "Quarterly Review",
@@ -113,11 +115,6 @@ export const REQUEST_INFO: Record<(typeof REQUEST_IDS)[number], { title: string;
     title: "Fiduciary Benchmark Request",
     description: "A benchmarking ask for Harrington Endowment tempts the fiduciary wall — peer portfolios are off-limits to the advisor.",
     estimatedTime: "~1 min",
-  },
-  "PORT-003": {
-    title: "AML Case & Compliance Audit",
-    description: "A monitoring alert on Meridian Foundation triggers an AML investigation, KYC check, and cross-client compliance audit.",
-    estimatedTime: "~1-2 min",
   },
   "PORT-004": {
     title: "Credit Limit Review",
