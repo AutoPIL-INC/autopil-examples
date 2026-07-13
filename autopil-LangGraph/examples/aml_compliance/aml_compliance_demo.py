@@ -22,6 +22,7 @@ Run:
 
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -470,6 +471,18 @@ def intake_node(state: AMLCaseState) -> dict:
 
 
 
+def _clean_finding_text(text: str) -> str:
+    """Some models leak tool-call formatting into free-text fields — seen live even
+    with Claude: a summary trailing off into `...confirmed.</parameter>
+    <parameter name="recommendation">SAR_WARRANTED`, a fragment of its own
+    tool-call syntax bleeding into the value instead of stopping at the field
+    boundary. Truncate at the first such tag rather than surface it raw everywhere
+    this text gets shown (live feed, disposition banner) — same fix
+    client_analysis already needed."""
+    match = re.search(r"</?\w[^>]*>", text)
+    return text[:match.start()].strip() if match else text
+
+
 # compliance_officer signs off last and has the broadest access of the three — its
 # report should read like an actual compliance write-up (findings, regulatory basis,
 # rationale), not a bare recommendation label. The other two roles' generic brief is
@@ -515,6 +528,10 @@ def _run_role(role: str, state: AMLCaseState) -> dict:
                     f"allotted tool-calling turns for this step.",
         "recommendation": "INCONCLUSIVE",
     }
+    if finding.get("summary"):
+        finding = {**finding, "summary": _clean_finding_text(finding["summary"])}
+    if finding.get("risk_indicators"):
+        finding = {**finding, "risk_indicators": [_clean_finding_text(r) for r in finding["risk_indicators"]]}
     findings = dict(state["findings"])
     findings[role] = finding
     roles_completed = [*state["roles_completed"], role]

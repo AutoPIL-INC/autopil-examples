@@ -16,6 +16,7 @@ Run:
 
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -330,7 +331,9 @@ _FINDING_TOOL_SCHEMA = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "summary": {"type": "string", "description": "1-3 sentence summary of what you found"},
+            "summary": {"type": "string", "description": "Summary of what you found — 1-3 sentences is "
+                                                           "enough for most roles; sar_generator should "
+                                                           "write a fuller SAR narrative, per its brief"},
             "risk_indicators": {"type": "array", "items": {"type": "string"}},
             "recommendation": {"type": "string", "description": "e.g. ESCALATE, MONITOR, FREEZE, CLEAR"},
             "sources_used": {"type": "array", "items": {"type": "string"}, "description": "sources you actually got data back from"},
@@ -342,13 +345,23 @@ _FINDING_TOOL_SCHEMA = {
 
 def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
                    tools: list, denial_log: list[DenialEvent], llm) -> tuple[Optional[Finding], list[DenialEvent]]:
-    """Run one agent's Claude tool-calling loop to completion (or MAX_TOOL_TURNS)."""
+    """Run one agent's Claude tool-calling loop to completion (or MAX_TOOL_TURNS).
+
+    Live-observed in aml_compliance (this repo's closest sibling): a model that calls
+    one tool per turn instead of batching several can burn through all of
+    MAX_TOOL_TURNS just gathering data, leaving no turn to call submit_finding, even
+    with a toolbelt this small. The plain "call a tool or conclude" nudge only fires
+    when a turn calls zero tools, which never happens if the model is methodically
+    working through its toolbelt one call at a time — so an escalating nudge fires
+    after *every* turn without a finding, same fix institutional_portfolio_review and
+    client_analysis already needed.
+    """
     tool_map = {t.name: t for t in tools}
     bound = llm.bind_tools([*tools, _FINDING_TOOL_SCHEMA])
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_brief)]
     local_denials: list[DenialEvent] = []
 
-    for _ in range(MAX_TOOL_TURNS):
+    for turn in range(MAX_TOOL_TURNS):
         response = bound.invoke(messages)
         messages.append(response)
 
@@ -387,6 +400,17 @@ def run_tool_loop(agent_role: str, system_prompt: str, user_brief: str,
         if finding is not None:
             denial_log.extend(local_denials)
             return finding, local_denials
+
+        turns_left = MAX_TOOL_TURNS - turn - 1
+        if turns_left <= 1:
+            messages.append(HumanMessage(
+                content="You must call submit_finding now, based on what you've gathered so far. Do not call any more data tools."
+            ))
+        else:
+            messages.append(HumanMessage(
+                content="You now have results from the tools you called. If you have enough to respond, call "
+                        "submit_finding now instead of calling more tools."
+            ))
 
     denial_log.extend(local_denials)
     print(f"      [warn]    {agent_role} exhausted {MAX_TOOL_TURNS} turns without submit_finding")
@@ -567,6 +591,18 @@ def orchestrator_node(state: InvestigationState) -> dict:
     }
 
 
+def _clean_finding_text(text: str) -> str:
+    """Some models leak tool-call formatting into free-text fields — seen live even
+    with Claude: a summary trailing off into `...confirmed.</parameter>
+    <parameter name="recommendation">ESCALATE`, a fragment of its own tool-call
+    syntax bleeding into the value instead of stopping at the field boundary.
+    Truncate at the first such tag rather than surface it raw everywhere this text
+    gets shown (live feed, disposition banner, routing reason) — same fix
+    client_analysis already needed."""
+    match = re.search(r"</?\w[^>]*>", text)
+    return text[:match.start()].strip() if match else text
+
+
 def _run_specialist(role: str, state: InvestigationState) -> dict:
     print(f"\n{'─'*70}\n  {role.upper().replace('_',' ')}  (session: {SESSIONS[role][:8]}…)\n{'─'*70}")
     tool_builders = {
@@ -584,8 +620,17 @@ def _run_specialist(role: str, state: InvestigationState) -> dict:
     denial_log = list(state["denial_log"])
     finding, _ = run_tool_loop(role, f"You are a {role.replace('_',' ')} at a bank's financial crimes unit.",
                                 brief, tools, denial_log, _make_llm(state["provider"]))
+    finding = finding or {
+        "summary": f"{role.replace('_', ' ').title()} did not reach a conclusion within the "
+                    f"allotted tool-calling turns for this step.",
+        "recommendation": "INCONCLUSIVE",
+    }
+    if finding.get("summary"):
+        finding = {**finding, "summary": _clean_finding_text(finding["summary"])}
+    if finding.get("risk_indicators"):
+        finding = {**finding, "risk_indicators": [_clean_finding_text(r) for r in finding["risk_indicators"]]}
     findings = dict(state["findings"])
-    findings[role] = finding or {"summary": "No finding submitted", "recommendation": "UNKNOWN"}
+    findings[role] = finding
     specialists_run = [*state["specialists_run"], role]
     _emit({"type": "finding", "role": role, "finding": findings[role]})
     return {"findings": findings, "specialists_run": specialists_run, "denial_log": denial_log}
@@ -642,8 +687,9 @@ def orchestrator_review_node(state: InvestigationState) -> dict:
     # model didn't call decide_next at all.
     decision = response.tool_calls[0]["args"] if response.tool_calls else {}
     nxt = decision.get("next", "sar_generator")
-    print(f"\n  [orchestrator review]  next -> {nxt}  ({decision.get('reason','')})")
-    _emit({"type": "routing", "stage": "review", "next": nxt, "reason": decision.get("reason", "")})
+    reason = _clean_finding_text(decision["reason"]) if decision.get("reason") else ""
+    print(f"\n  [orchestrator review]  next -> {nxt}  ({reason})")
+    _emit({"type": "routing", "stage": "review", "next": nxt, "reason": reason})
     return {"orchestration_steps": steps, "final_decision": f"route:{nxt}"}
 
 
@@ -654,16 +700,31 @@ def route_after_review(state: InvestigationState) -> str:
 def sar_generator_node(state: InvestigationState) -> dict:
     print(f"\n{'─'*70}\n  SAR GENERATOR  (session: {SESSIONS['sar_generator'][:8]}…)\n{'─'*70}")
     tools = sar_generator_tools(state["case_id"])
+    findings_summary = "\n".join(
+        f"- {role.replace('_', ' ').title()}: {f.get('recommendation', 'UNKNOWN')} — {f.get('summary', '')}"
+        for role, f in state["findings"].items()
+    ) or "(no specialist findings recorded)"
     brief = (
         f"You are compiling a SAR (Suspicious Activity Report) recommendation for case "
         f"{state['case_id']}, account {state['account_id']}.\n\n"
-        f"Compiled findings from other agents are available via get_agent_outputs. "
-        f"Gather what you need, then call submit_finding with your SAR recommendation."
+        f"Findings from the specialists who investigated this case so far:\n{findings_summary}\n\n"
+        f"You can also call get_agent_outputs for additional compiled context. Your "
+        f"submit_finding summary must be a complete SAR narrative: what the specialists "
+        f"found, the risk pattern it points to, and why your recommendation follows — not "
+        f"a bare label. Gather what else you need, then call submit_finding."
     )
     denial_log = list(state["denial_log"])
     finding, _ = run_tool_loop("sar_generator", "You are a SAR compliance writer at a bank's financial crimes unit.",
                                 brief, tools, denial_log, _make_llm(state["provider"]))
-    sar_draft = finding or {}
+    sar_draft = finding or {
+        "summary": "SAR generator did not reach a conclusion within the allotted "
+                    "tool-calling turns for this step.",
+        "recommendation": "INCONCLUSIVE",
+    }
+    if sar_draft.get("summary"):
+        sar_draft = {**sar_draft, "summary": _clean_finding_text(sar_draft["summary"])}
+    if sar_draft.get("risk_indicators"):
+        sar_draft = {**sar_draft, "risk_indicators": [_clean_finding_text(r) for r in sar_draft["risk_indicators"]]}
     _emit({"type": "finding", "role": "sar_generator", "finding": sar_draft})
     return {"sar_draft": sar_draft, "denial_log": denial_log}
 

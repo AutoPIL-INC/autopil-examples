@@ -298,7 +298,10 @@ _FINDING_TOOL_SCHEMA = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "summary": {"type": "string", "description": "1-3 sentence summary of what you found and why you're recommending this action"},
+            "summary": {"type": "string", "description": "Summary of what you found and why you're recommending "
+                                                           "this action — 1-3 sentences is enough for most tiers; "
+                                                           "wealth_advisor should synthesize the full case, per "
+                                                           "its brief"},
             "proposed_action": {"type": "string", "enum": CLIENT_ACTIONS, "description": "the concrete next action you recommend for this client"},
             "recommend_escalation": {"type": "boolean", "description": "true if this case needs a broader-access role's review before acting on it"},
             "sources_used": {"type": "array", "items": {"type": "string"}, "description": "sources you actually got data back from"},
@@ -453,16 +456,48 @@ def _clean_finding_text(text: str) -> str:
     return text[:match.start()].strip() if match else text
 
 
+
+# wealth_advisor is the top of the escalation chain — there's no tier above it to
+# catch what it misses, so its summary should synthesize the whole case rather than
+# repeat the same one-liner style the earlier tiers use.
+_ROLE_GUIDANCE = {
+    "wealth_advisor": (
+        "You are the top of the escalation chain for this client — there is no tier "
+        "above you. Review the findings from the tiers below before you conclude. "
+        "Your submit_finding summary should synthesize the full picture: what each "
+        "earlier tier found, what you found, and why your proposed action follows "
+        "from all of it."
+    ),
+}
+
+
+def _no_finding_summary(role: str) -> str:
+    return (f"{role.replace('_', ' ').title()} did not reach a conclusion within the "
+            f"allotted tool-calling turns for this step.")
+
+
 def _run_role(role: str, state: ClientReviewState) -> dict:
     customer_id = state["customer_id"]
     review = ucdata.CLIENT_REVIEWS[customer_id]
     task_type = review["tier_tasks"].get(role, DEFAULT_TIER_TASK[role])
     print(f"\n{'─'*70}\n  {role.upper().replace('_',' ')}  (session: {SESSIONS[role][:8]}…)  task={task_type}\n{'─'*70}")
     tools = role_tools(role, task_type, key_hint=customer_id)
+
+    prior_findings = ""
+    if state["findings"]:
+        lines = [
+            f"- {r.replace('_', ' ').title()}: {f.get('proposed_action', 'UNKNOWN')} — {f.get('summary', '')}"
+            for r, f in state["findings"].items()
+        ]
+        prior_findings = "\n\nFindings so far from earlier tiers:\n" + "\n".join(lines)
+
+    role_guidance = _ROLE_GUIDANCE.get(role, "")
     brief = (
         f"You are the {role.replace('_',' ')} reviewing client {customer_id}.\n\n"
-        f"Reason for review: {state['reason_for_review']}\n\n"
+        f"Reason for review: {state['reason_for_review']}"
+        f"{prior_findings}\n\n"
         f"Your task for this review is: {task_type}.\n\n"
+        f"{role_guidance}\n"
         f"Gather whatever data you need using the tools available to you, then call "
         f"submit_finding with your recommended next action for this client."
     )
@@ -476,7 +511,7 @@ def _run_role(role: str, state: ClientReviewState) -> dict:
         # authorizes), a higher tier isn't more likely to succeed at the same task;
         # flag it for compliance and let it close here instead of climbing the tier
         # ladder for no real reason.
-        finding = {"summary": "No finding submitted", "proposed_action": "FLAG FOR COMPLIANCE / RISK REVIEW",
+        finding = {"summary": _no_finding_summary(role), "proposed_action": "FLAG FOR COMPLIANCE / RISK REVIEW",
                    "recommend_escalation": not got_data}
     # Not every model honors the enum constraint strictly — seen live: qwen2.5:7b
     # omitted proposed_action outright on some turns despite it being a required
@@ -505,9 +540,9 @@ def _escalation_reason(role: str, finding: dict, tier_denials: list) -> str:
     role_label = role.replace("_", " ")
     parts = []
     summary = finding.get("summary")
-    if summary and summary != "No finding submitted":
+    if summary and summary != _no_finding_summary(role):
         parts.append(summary)
-    elif summary == "No finding submitted":
+    elif summary == _no_finding_summary(role):
         parts.append(f"{role_label} didn't submit a usable finding within {MAX_TOOL_TURNS} tool turns")
     if tier_denials:
         mechanisms = sorted({_classify_denial(d["reason"]) for d in tier_denials})

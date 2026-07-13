@@ -36,6 +36,7 @@ Run:
 
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -454,7 +455,10 @@ _FINDING_TOOL_SCHEMA = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "summary": {"type": "string", "description": "1-3 sentence summary of what you produced (or why you couldn't)"},
+            "summary": {"type": "string", "description": "Summary of what you produced (or why you couldn't) — "
+                                                           "1-3 sentences is enough for most roles; "
+                                                           "report_generator should synthesize the full review, "
+                                                           "per its brief"},
             "outcome": {"type": "string", "enum": ["COMPLETED", "BLOCKED"], "description": "COMPLETED if you produced the requested output using only sources that succeeded; BLOCKED if denials left you unable to complete it"},
             "sources_used": {"type": "array", "items": {"type": "string"}},
         },
@@ -617,6 +621,18 @@ def _classify_denial(reason: str) -> str:
 
 # ── orchestrator ──────────────────────────────────────────────────────────────────
 
+def _clean_finding_text(text: str) -> str:
+    """Some models leak tool-call formatting into free-text fields — seen live even
+    with Claude: reasoning trailing off into `...quarterly review.</parameter>
+    <parameter name="review_type">quarterly_review`, a fragment of its own tool-call
+    syntax bleeding into the value instead of stopping at the field boundary.
+    Truncate at the first such tag rather than surface it raw everywhere this text
+    gets shown (live feed, routing reason) — same fix client_analysis already
+    needed."""
+    match = re.search(r"</?\w[^>]*>", text)
+    return text[:match.start()].strip() if match else text
+
+
 def orchestrator_node(state: ReviewState) -> dict:
     _reset_sessions()
     print(f"\n{'─'*70}\n  PORTFOLIO ORCHESTRATOR  (session: {SESSIONS['orchestrator'][:8]}…)\n{'─'*70}")
@@ -652,10 +668,11 @@ def orchestrator_node(state: ReviewState) -> dict:
         review_type = review_types[0]
 
     roles_plan = [list(step) for step in REVIEW_TYPES[review_type]]
-    print(f"  → review_type: {review_type}  {args.get('reasoning', '')}")
+    reasoning = _clean_finding_text(args["reasoning"]) if args.get("reasoning") else ""
+    print(f"  → review_type: {review_type}  {reasoning}")
     print(f"  → plan: {roles_plan}")
     _emit({"type": "routing", "stage": "initial", "review_type": review_type,
-           "plan": [r for r, _ in roles_plan], "reasoning": args.get("reasoning", "")})
+           "plan": [r for r, _ in roles_plan], "reasoning": reasoning})
 
     return {
         "client_id": request["client_id"], "brief": brief, "review_type": review_type,
@@ -680,22 +697,53 @@ ROLE_FOCUS_HINTS = {
 }
 
 
+
+# report_generator is the terminal role in every chain that has one — its summary
+# should synthesize what the other roles actually found in this run, not just point
+# at the same compiled-outputs tool the other roles' hints already mention.
+_ROLE_GUIDANCE = {
+    "report_generator": (
+        "Review the findings from the earlier steps below before you conclude. Your "
+        "submit_finding summary must synthesize the full review: what each role found, "
+        "and what that means for the client — not a one-line restatement."
+    ),
+}
+
+
 def _run_role(role: str, state: ReviewState) -> dict:
     task_type = state["roles_plan"][0][1]
     print(f"\n{'─'*70}\n  {role.upper().replace('_',' ')}  (session: {SESSIONS[role][:8]}…)  task={task_type}\n{'─'*70}")
     tools = role_tools(role, task_type, key_hint=state["client_id"])
+
+    prior_findings = ""
+    if state["findings"]:
+        lines = [
+            f"- {r.replace('_', ' ').title()}: {f.get('outcome', 'UNKNOWN')} — {f.get('summary', '')}"
+            for r, f in state["findings"].items()
+        ]
+        prior_findings = "\n\nFindings so far from earlier steps:\n" + "\n".join(lines)
+
+    role_guidance = _ROLE_GUIDANCE.get(role, "")
     brief = (
         f"You are the {role.replace('_',' ')} handling this step of an institutional "
         f"portfolio review for client {state['client_id']}.\n\n"
-        f"Overall request:\n{state['brief']}\n\n"
+        f"Overall request:\n{state['brief']}"
+        f"{prior_findings}\n\n"
         f"Your specific task for this step is: {task_type}. {ROLE_FOCUS_HINTS.get(role, '')}\n\n"
+        f"{role_guidance}\n"
         f"Gather whatever data you need using the tools available to you, then call "
         f"submit_finding with your response."
     )
     denial_log = list(state["denial_log"])
     finding, _ = run_tool_loop(role, f"You are a {role.replace('_',' ')} at an institutional wealth management firm.",
                                 brief, tools, denial_log, _make_llm(state["provider"]))
-    finding = finding or {"summary": "No finding submitted", "outcome": "BLOCKED"}
+    finding = finding or {
+        "summary": f"{role.replace('_', ' ').title()} did not reach a conclusion within the "
+                    f"allotted tool-calling turns for this step.",
+        "outcome": "BLOCKED",
+    }
+    if finding.get("summary"):
+        finding = {**finding, "summary": _clean_finding_text(finding["summary"])}
     findings = dict(state["findings"])
     findings[role] = finding
     roles_completed = [*state["roles_completed"], role]
