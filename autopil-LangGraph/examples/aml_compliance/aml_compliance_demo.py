@@ -325,7 +325,9 @@ _FINDING_TOOL_SCHEMA = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "summary": {"type": "string", "description": "1-3 sentence summary of what you found"},
+            "summary": {"type": "string", "description": "Summary of what you found — 1-3 sentences is "
+                                                           "enough for most roles; compliance_officer should "
+                                                           "write a fuller compliance report, per its brief"},
             "risk_indicators": {"type": "array", "items": {"type": "string"}},
             "recommendation": {"type": "string", "description": "e.g. ESCALATE, CLEAR, HOLD, SAR_WARRANTED"},
             "sources_used": {"type": "array", "items": {"type": "string"}, "description": "sources you actually got data back from"},
@@ -467,13 +469,41 @@ def intake_node(state: AMLCaseState) -> dict:
     }
 
 
+
+# compliance_officer signs off last and has the broadest access of the three — its
+# report should read like an actual compliance write-up (findings, regulatory basis,
+# rationale), not a bare recommendation label. The other two roles' generic brief is
+# enough for their narrower, single-purpose steps.
+_ROLE_GUIDANCE = {
+    "compliance_officer": (
+        "You are the final sign-off before any disposition is recorded. Review the "
+        "findings from the earlier steps below, then gather whatever additional data "
+        "you need. Your submit_finding summary must be a complete compliance report: "
+        "what the investigation found, which regulatory basis applies (e.g. BSA/AML, "
+        "OFAC, SOX), and why your recommendation follows from that — not a bare label."
+    ),
+}
+
+
 def _run_role(role: str, state: AMLCaseState) -> dict:
     print(f"\n{'─'*70}\n  {role.upper().replace('_',' ')}  (session: {SESSIONS[role][:8]}…)\n{'─'*70}")
     tools = TOOL_BUILDERS[role](state["account_id"])
+
+    prior_findings = ""
+    if state["findings"]:
+        lines = [
+            f"- {r.replace('_', ' ').title()}: {f['recommendation']} — {f['summary']}"
+            for r, f in state["findings"].items()
+        ]
+        prior_findings = "\n\nFindings so far from earlier steps:\n" + "\n".join(lines)
+
+    role_guidance = _ROLE_GUIDANCE.get(role, "")
     brief = (
         f"You are the {role.replace('_',' ')} handling this step of an AML case "
         f"review for account {state['account_id']}.\n\n"
-        f"Reason for review: {state['reason_for_review']}\n\n"
+        f"Reason for review: {state['reason_for_review']}"
+        f"{prior_findings}\n\n"
+        f"{role_guidance}\n"
         f"Gather whatever data you need using the tools available to you, then call "
         f"submit_finding with your assessment."
     )
