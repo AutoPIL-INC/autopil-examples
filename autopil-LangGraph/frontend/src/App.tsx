@@ -82,7 +82,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("description");
 
   const active = DEMOS[demo];
-  const { Description, Execution } = active;
+  const { Description } = active;
 
   const selectDemo = (next: Demo) => {
     setDemo(next);
@@ -133,7 +133,15 @@ export default function App() {
       </nav>
 
       <main className="main">
-        {tab === "description" ? <Description /> : <Execution />}
+        {tab === "description" && <Description />}
+        {(Object.keys(DEMOS) as Demo[]).map((key) => {
+          const { Execution } = DEMOS[key];
+          return (
+            <div key={key} style={{ display: tab === "execution" && demo === key ? "block" : "none" }}>
+              <Execution />
+            </div>
+          );
+        })}
       </main>
 
       <footer className="footer">
