@@ -56,7 +56,12 @@ Verified live against a real trial tenant (base_url https://autopil-api.onrender
     fraud_investigation/client_analysis both disclose.
 """
 
+import time
+
 import httpx
+
+_EVALUATE_MAX_ATTEMPTS = 3
+_EVALUATE_BACKOFF_SECONDS = 1.0
 
 
 class _Decision:
@@ -112,7 +117,18 @@ class RemoteContextGuard:
                     "sensitivity_level": sensitivity_str, "session_id": session_id,
                     "agent_id": agent_id, "task_type": task_type,
                 }
-                resp = self._eval_client.post("/v1/context/evaluate", json=payload)
+                resp = None
+                for attempt in range(_EVALUATE_MAX_ATTEMPTS):
+                    try:
+                        resp = self._eval_client.post("/v1/context/evaluate", json=payload)
+                    except httpx.TransportError:
+                        if attempt == _EVALUATE_MAX_ATTEMPTS - 1:
+                            raise
+                        time.sleep(_EVALUATE_BACKOFF_SECONDS * (2 ** attempt))
+                        continue
+                    if resp.status_code < 500 or attempt == _EVALUATE_MAX_ATTEMPTS - 1:
+                        break
+                    time.sleep(_EVALUATE_BACKOFF_SECONDS * (2 ** attempt))
                 resp.raise_for_status()
                 data = resp.json()
                 if data["decision"] == "DENY":
@@ -148,8 +164,13 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
     existed.
     """
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
-    existing = client.get("/v1/agents", params={"framework": "langgraph", "owner": owner_tag}).json()
-    by_role = {a["agent_role"]: a for a in existing}
+    existing_resp = client.get("/v1/agents", params={"framework": "langgraph", "owner": owner_tag})
+    if existing_resp.is_error:
+        raise RuntimeError(
+            f"AutoPIL API error listing agents ({existing_resp.status_code}): "
+            f"{existing_resp.text} — check AUTOPIL_ADMIN_KEY in .env"
+        )
+    by_role = {a["agent_role"]: a for a in existing_resp.json()}
 
     result = {}
     for role in roles:
