@@ -151,8 +151,13 @@ def ensure_policy(base_url: str, admin_key: str, name: str, agent_role: str, spe
     OpenAPI schema, not assumed.
     """
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
-    existing = client.get("/v1/policies").json()
-    if any(p.get("name") == name for p in existing):
+    existing_resp = client.get("/v1/policies")
+    if existing_resp.is_error:
+        raise RuntimeError(
+            f"AutoPIL API error listing policies ({existing_resp.status_code}): "
+            f"{existing_resp.text} — check AUTOPIL_ADMIN_KEY in .env"
+        )
+    if any(p.get("name") == name for p in existing_resp.json()):
         return
     resp = client.post("/v1/policies", json={"name": name, "agent_role": agent_role, **spec})
     resp.raise_for_status()
