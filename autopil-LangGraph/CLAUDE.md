@@ -37,6 +37,20 @@ as a whole.
   `fraud_investigation` (its closest sibling). See its
   [DESIGN.md](./examples/aml_compliance/DESIGN.md) and
   [README.md](./examples/aml_compliance/README.md).
+- `examples/splunk_secops/` — 5 roles (`soc_orchestrator`, `security_auditor`,
+  `incident_triage`, `compliance_reporter`, `splunk_threat_synthesizer`) governing
+  Splunk data that IBM mainframe tools forward from `z/OS` SMF logs. Same
+  reasoning-driven design as `fraud_investigation` (its closest sibling — the
+  synthesizer role plays the exact same part `sar_generator` does), moved into a
+  security-operations domain instead of financial services. No hosted SaaS trial mode
+  (out of scope for this addition — see its DESIGN.md §7). Has its own standalone
+  `frontend/`, mirroring `fraud_investigation/frontend/`'s structure, and is also
+  wired into the shared `frontend/src/demos/splunk_secops/` (see that directory's note
+  below on hand-syncing if either copy ever needs to change).
+  Its own data module is `splunk_secops_data.py`, not `simulated_data.py` — see the
+  module-name-collision note below for why. See its
+  [DESIGN.md](./examples/splunk_secops/DESIGN.md) and
+  [README.md](./examples/splunk_secops/README.md).
 - `frontend/` — a sixth, **additive** frontend covering every demo from one
   `langgraph dev` server, so you don't need two `npm run dev` processes. Each demo's
   own standalone frontend (`examples/*/frontend/`) is untouched and still works
@@ -92,7 +106,11 @@ as a whole.
   `aml_compliance`'s data module — `aml_case_data.py`, not `simulated_data.py`, which
   `fraud_investigation` already has. When adding a new demo, check its module names
   against every existing demo's, then verify with `langgraph dev` (not just the
-  demo's own CLI script) before calling it done.
+  demo's own CLI script) before calling it done. **Caught again adding `splunk_secops`**
+  — its first draft used `simulated_data.py` (copying `fraud_investigation`'s pattern
+  too literally) and `langgraph dev` failed with exactly this `AttributeError` on
+  startup; renamed to `splunk_secops_data.py` and re-verified with a full 5-graph
+  `langgraph dev` load before calling it done.
 - **This exact collision actually happened, live, once all 4 demos had hosted SaaS
   trial mode.** Each demo's own `saas_guard.py` was identically named — harmless while
   they were all functionally interchangeable, but the moment
@@ -265,3 +283,44 @@ as a whole.
   disclosed drift) — no dedicated policy creation needed here.
 - The audit database `examples/aml_compliance/aml_compliance_audit.db` is disposable
   — safe to delete between runs.
+
+## Working with the splunk_secops demo
+
+- Follows `fraud_investigation`'s exact architecture (LLM-driven `soc_orchestrator`
+  routing, `orchestrator_review_node` re-routing loop, `splunk_threat_synthesizer`
+  playing the same role `sar_generator` does, rule-based `decision_node` + human
+  `interrupt()`) — the closest sibling of any demo in this repo, just moved into a
+  security-operations domain (Splunk data forwarded from `z/OS` SMF mainframe logs)
+  instead of financial services.
+- **No hosted AutoPIL SaaS trial mode** — intentional simplification for this addition
+  (see its DESIGN.md §7), unlike the other 4 demos.
+- **Has its own standalone `examples/splunk_secops/frontend/`**, added after the
+  initial round — same Vite + React + TypeScript structure as
+  `fraud_investigation/frontend/` (Description tab from `policyData.ts`/`types.ts`,
+  Execution tab via `useStream()` with `assistantId: "splunk_secops"`). Also copied into
+  the shared multi-demo `frontend/src/demos/splunk_secops/` (5th tab in
+  `frontend/src/App.tsx`'s `DEMOS` record) — both copies are byte-identical right now;
+  see the module immediately above this one for what "keep in sync by hand" means if
+  either one changes later. Also reachable via generic LangGraph Studio, through the
+  same `langgraph.json` entry every demo shares.
+- **`security_auditor`'s "daily scheduled" framing is a design fact, not literal cron
+  code** — no demo in this repo runs anything on an actual schedule (confirmed
+  nothing in this repo uses cron/APScheduler/celery/a timer of any kind). It's modeled
+  via `permitted_agent_ids` on `security_auditor_policy`, locking that role to a named,
+  approved service-agent identity (`soc-security-auditor-prod`), the same mechanism
+  `transaction_analyst_policy` uses in `fraud_investigation.yaml`.
+- **The original source-allow/deny spec had self-contradictions** (the same source
+  listed as both allowed and denied for a role — copy-paste artifacts from listing
+  "everything except what's allowed" by hand) — resolved by treating each role's
+  allowed list as authoritative and computing `denied_sources` as the complement over
+  the full 9-source set. See DESIGN.md §6 for the full reconciliation if the policy
+  YAML ever looks like it's missing an entry someone expected.
+- Two attack-surface tools on `splunk_threat_synthesizer_tools()` mirror
+  `sar_generator_tools()`'s exactly: `get_case_agent_outputs` (session isolation —
+  reaches `agent_outputs` through `incident_triage`'s session instead of its own) and
+  `get_subject_racf_status` (role spoofing — synthesizer's real `agent_id` claiming
+  `agent_role="security_auditor"` to reach `smf_security`). Both verified directly
+  (bypassing the LLM) during development, same as fraud_investigation's README
+  documents for its own equivalents.
+- The audit database `examples/splunk_secops/splunk_secops_audit.db` is disposable —
+  safe to delete between runs.
