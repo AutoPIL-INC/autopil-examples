@@ -166,10 +166,11 @@ notes — same pattern as every other demo in this repo. The CLI stays fully una
 
 ## Known constraints
 
-- `ContextGuard.protect()` is embedded-only — this runs entirely local, no hosted
-  AutoPIL SaaS trial mode (unlike `fraud_investigation`/`client_analysis`/
-  `institutional_portfolio_review`/`aml_compliance`). Deliberately kept simple, since
-  the point of this demo is the governance pattern, not a hosted-mode integration.
+- Runs local-only (embedded `ContextGuard.protect()`) by default. Optional hosted
+  AutoPIL SaaS trial mode, same auto-detect (`AUTOPIL_ADMIN_KEY` +
+  `AUTOPIL_EVALUATE_KEY` both set) as the other 4 demos — see `splunk_saas_guard.py`'s
+  module docstring for what's confirmed vs. a known gap (`permitted_agent_ids`/
+  `session_ttl_minutes`/`sensitivity_decay` aren't enforceable the same way remotely).
 - No live Splunk connection, and none intended — see the top of this file.
 - Non-determinism is a property of this demo, not a defect — a "clean" run with zero
   denials is a legitimate outcome, just a less interesting one to watch.

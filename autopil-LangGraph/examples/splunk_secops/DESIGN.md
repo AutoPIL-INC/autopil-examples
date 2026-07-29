@@ -92,9 +92,12 @@ collapsed into the single canonical `agent_outputs`, matching every other demo's
 
 ## 7. Out of scope for this round
 
-- **Hosted AutoPIL SaaS trial mode** — every other demo in this repo supports this
-  (`AUTOPIL_ADMIN_KEY`/`AUTOPIL_EVALUATE_KEY`); this demo intentionally stays local-only
-  to keep the addition scoped to the governance pattern itself.
+- ~~Hosted AutoPIL SaaS trial mode~~ — added after the initial round; see
+  `splunk_saas_guard.py`'s module docstring for what's confirmed live (a real
+  authorized read allowed, an over-scope read denied, the audit trail read back
+  correctly, all against the shared trial tenant) vs. the disclosed gap
+  (`permitted_agent_ids`/`session_ttl_minutes`/`sensitivity_decay` have no equivalent
+  on the hosted policy schema).
 - **OpenAI Agents SDK variant** and a **pytest suite** — `USECASE_GUIDE.md` (from the
   core `autopil` SDK repo) calls for both as part of a complete use case; this repo's
   existing demos (fraud/client_analysis/institutional_portfolio_review/aml_compliance)
@@ -104,3 +107,33 @@ collapsed into the single canonical `agent_outputs`, matching every other demo's
   a design fact (its policy assumes a named, approved service agent via
   `permitted_agent_ids`, mirroring a real cron-triggered service identity), not as
   actual cron/timer code — no demo in this repo runs anything on an actual schedule.
+
+## Appendix: hosted trial mode
+
+Opt in by setting both `AUTOPIL_ADMIN_KEY` and `AUTOPIL_EVALUATE_KEY` (`.env`) — same
+auto-detect pattern as the other 4 demos. Falls back to the embedded, local
+`ContextGuard` otherwise.
+
+Unlike `fraud_investigation`'s hosted mode, none of this demo's 5 SOC role names have
+a matching pre-seeded policy on the shared (financial_services-flavored) trial
+tenant, so `splunk_secops_demo.py` calls `ensure_policy()` to create 5 dedicated
+`demo_splunk_<role>_policy` policies — translated field-for-field from
+`policies/SecOps/soc_mainframe_logs.yaml` — the same approach
+`institutional_portfolio_review`'s `ipr_saas_guard.py` uses for its own
+non-matching role set. `owner_tag="SecOps-team"` keeps this demo's bootstrapped
+agents from colliding with another demo's under `bootstrap_agents()`'s
+`(agent_role, owner_tag)` de-dupe key.
+
+Confirmed live against the real trial tenant: an authorized `security_auditor` read
+of `smf_security` (task `racf_violation_review`) was ALLOWed, an over-scope read of
+`splunk_index_summery` under the same role/task was DENIED with the expected reason,
+and `get_audit_trail()` read both events back correctly via the Admin key.
+
+Disclosed gap, not silently claimed as at-parity: `CreatePolicyRequest` has no
+`permitted_agent_ids`, `session_ttl_minutes`, or `sensitivity_decay` field. This
+drops three mechanisms this demo's local policy relies on —
+`security_auditor_policy`'s lock to a named service identity,
+`incident_triage_policy`'s time-boxed session + 2-step sensitivity decay, and
+`splunk_threat_synthesizer_policy`'s own sensitivity decay — none of which are
+enforceable the same way against the hosted API. See `splunk_saas_guard.py`'s module
+docstring for the full writeup.

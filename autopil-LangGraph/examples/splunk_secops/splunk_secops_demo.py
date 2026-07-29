@@ -42,6 +42,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
+from langchain_openai import ChatOpenAI
 
 from autopil import ContextGuard, SensitivityLevel
 from autopil.db.sqlite import SQLiteAgentRegistryStore
@@ -95,13 +96,112 @@ def _register_agents() -> None:
         )
 
 
-# This demo intentionally stays local-only — no hosted AutoPIL SaaS trial mode, unlike
-# fraud_investigation/client_analysis/institutional_portfolio_review/aml_compliance.
-# The whole point of this demo is showing the pattern (guard.protect() wrapping
-# simulated Splunk data) without any external dependency, live or hosted.
-_register_agents()
-guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
-                      agent_registry_store=AGENT_REGISTRY_STORE)
+# Hosted AutoPIL SaaS trial mode — opt in by setting both AUTOPIL_ADMIN_KEY and
+# AUTOPIL_EVALUATE_KEY (same explicit-opt-in pattern as the other 4 demos). Falls
+# back to the embedded, local ContextGuard otherwise. UNVERIFIED against a real
+# trial tenant, unlike the other 4 demos' hosted mode — see splunk_saas_guard.py's
+# module docstring for what's assumed vs. confirmed.
+_SAAS_MODE = bool(os.getenv("AUTOPIL_ADMIN_KEY")) and bool(os.getenv("AUTOPIL_EVALUATE_KEY"))
+
+# Field-for-field translation of policies/SecOps/soc_mainframe_logs.yaml into
+# CreatePolicyRequest bodies — permitted_agent_ids/session_ttl_minutes/
+# sensitivity_decay are dropped (no such fields on that endpoint; see
+# splunk_saas_guard.py's module docstring for what that gap costs each role).
+_POLICY_SPECS = {
+    "soc_orchestrator": {
+        "description": "Routes security alerts to specialist agents and coordinates the SOC investigation; orchestration only, no raw Splunk index access",
+        "allowed_sources": ["security_alerts", "case_metadata", "agent_outputs"],
+        "denied_sources": ["smf_security", "smf_performance", "smf_transactions", "smf_systems",
+                            "splunk_index_summery", "regulatory_templates"],
+        "allowed_tasks": ["route_alert", "escalate_case", "close_case", "assign_specialist"],
+        "denied_tasks": ["racf_violation_review", "incident_investigation", "compliance_summary", "threat_synthesis"],
+        "max_sensitivity": "medium", "require_task_for_sensitivity": "medium",
+        "task_bindings": [
+            {"task": "route_alert", "permitted_sources": ["security_alerts", "case_metadata"]},
+            {"task": "escalate_case", "permitted_sources": ["security_alerts", "case_metadata", "agent_outputs"]},
+            {"task": "close_case", "permitted_sources": ["case_metadata", "agent_outputs"]},
+            {"task": "assign_specialist", "permitted_sources": ["case_metadata"]},
+        ],
+    },
+    "security_auditor": {
+        "description": "Reviews RACF access-violation events from the daily scheduled SMF security sweep; no access to any other Splunk source",
+        "allowed_sources": ["smf_security"],
+        "denied_sources": ["smf_performance", "smf_transactions", "smf_systems", "splunk_index_summery",
+                            "agent_outputs", "regulatory_templates", "security_alerts", "case_metadata"],
+        "allowed_tasks": ["racf_violation_review", "daily_security_audit"],
+        "denied_tasks": ["incident_investigation", "compliance_summary", "threat_synthesis"],
+        "max_sensitivity": "high", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "racf_violation_review", "permitted_sources": ["smf_security"]},
+            {"task": "daily_security_audit", "permitted_sources": ["smf_security"]},
+        ],
+    },
+    "incident_triage": {
+        "description": "Cross-source investigation across all 4 SMF log types during an active incident; broader index set than any other specialist, deliberately time-boxed",
+        "allowed_sources": ["smf_security", "smf_performance", "smf_transactions", "smf_systems",
+                             "security_alerts", "case_metadata"],
+        "denied_sources": ["splunk_index_summery", "agent_outputs", "regulatory_templates"],
+        "allowed_tasks": ["incident_investigation", "cross_source_correlation"],
+        "denied_tasks": ["racf_violation_review", "compliance_summary", "threat_synthesis"],
+        "max_sensitivity": "critical", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "incident_investigation", "permitted_sources": ["smf_security", "smf_performance", "smf_transactions", "smf_systems", "security_alerts", "case_metadata"]},
+            {"task": "cross_source_correlation", "permitted_sources": ["smf_security", "smf_performance", "smf_transactions", "smf_systems"]},
+        ],
+    },
+    "compliance_reporter": {
+        "description": "Reports index-level retention/health summaries across all Splunk indices; no raw SMF record access on any source",
+        "allowed_sources": ["splunk_index_summery"],
+        "denied_sources": ["smf_security", "smf_performance", "smf_transactions", "smf_systems",
+                            "agent_outputs", "regulatory_templates", "security_alerts", "case_metadata"],
+        "allowed_tasks": ["compliance_summary", "index_health_check"],
+        "denied_tasks": ["racf_violation_review", "incident_investigation", "threat_synthesis"],
+        "max_sensitivity": "medium", "require_task_for_sensitivity": "medium",
+        "task_bindings": [
+            {"task": "compliance_summary", "permitted_sources": ["splunk_index_summery"]},
+            {"task": "index_health_check", "permitted_sources": ["splunk_index_summery"]},
+        ],
+    },
+    "splunk_threat_synthesizer": {
+        "description": "Synthesizes the final threat/incident report from compiled specialist findings only; no raw Splunk index access",
+        "allowed_sources": ["agent_outputs", "regulatory_templates", "case_metadata"],
+        "denied_sources": ["smf_security", "smf_performance", "smf_transactions", "smf_systems",
+                            "splunk_index_summery", "security_alerts"],
+        "allowed_tasks": ["threat_synthesis", "threat_review", "case_summary"],
+        "denied_tasks": ["racf_violation_review", "incident_investigation", "compliance_summary"],
+        "max_sensitivity": "critical", "require_task_for_sensitivity": "high",
+        "task_bindings": [
+            {"task": "threat_synthesis", "permitted_sources": ["agent_outputs", "case_metadata", "regulatory_templates"]},
+            {"task": "threat_review", "permitted_sources": ["agent_outputs", "case_metadata"]},
+            {"task": "case_summary", "permitted_sources": ["agent_outputs", "case_metadata"]},
+        ],
+    },
+}
+
+if _SAAS_MODE:
+    from splunk_saas_guard import RemoteContextGuard, bootstrap_agents, ensure_policy
+    _API_URL = os.getenv("AUTOPIL_API_URL", "https://autopil-api.onrender.com")
+    # This demo's 5 SOC role names don't match any pre-seeded policy on the shared
+    # (financial_services-flavored) trial tenant, unlike fraud_investigation's — so
+    # each role gets its own dedicated demo_splunk_<role>_policy, translated from
+    # _POLICY_SPECS above, rather than assuming a pre-seeded match. owner_tag is
+    # demo-specific too (not the generic "autopil-langgraph-demos" tag), matching
+    # institutional_portfolio_review's ipr_saas_guard.py precedent: bootstrap_agents()
+    # only de-dupes by (agent_role, owner_tag), and a future demo could otherwise
+    # reuse one of this demo's role names under the generic tag.
+    for _role, _spec in _POLICY_SPECS.items():
+        ensure_policy(_API_URL, os.environ["AUTOPIL_ADMIN_KEY"], f"demo_splunk_{_role}_policy", _role, _spec)
+    AGENT_IDS.update(bootstrap_agents(
+        _API_URL, os.environ["AUTOPIL_ADMIN_KEY"], roles=list(AGENT_IDS),
+        owner_tag="SecOps-team",
+        policy_name_for=lambda role: f"demo_splunk_{role}_policy",
+    ))
+    SECURITY_AUDITOR_AGENT_ID = AGENT_IDS["security_auditor"]
+    guard = RemoteContextGuard(_API_URL, os.environ["AUTOPIL_EVALUATE_KEY"], os.environ["AUTOPIL_ADMIN_KEY"])
+else:
+    _register_agents()
+    guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
+                          agent_registry_store=AGENT_REGISTRY_STORE)
 
 
 def _make_llm(provider: str = ""):
@@ -136,7 +236,9 @@ def _make_llm(provider: str = ""):
             raise RuntimeError("GROQ_API_KEY not set (see .env.example)")
         return ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
     if provider == "ollama":
-        return ChatOllama(model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"))
+        return ChatOpenAI(model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
+                          openai_api_base="http://localhost:4000/v1",
+                          openai_api_key="not-needed",)
     raise ValueError(f"Unknown provider: {provider!r}")
 
 

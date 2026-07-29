@@ -42,8 +42,9 @@ as a whole.
   Splunk data that IBM mainframe tools forward from `z/OS` SMF logs. Same
   reasoning-driven design as `fraud_investigation` (its closest sibling — the
   synthesizer role plays the exact same part `sar_generator` does), moved into a
-  security-operations domain instead of financial services. No hosted SaaS trial mode
-  (out of scope for this addition — see its DESIGN.md §7). Has its own standalone
+  security-operations domain instead of financial services. Optional hosted SaaS
+  trial mode, added after the initial round (see its DESIGN.md's "Appendix: hosted
+  trial mode" and `splunk_saas_guard.py`). Has its own standalone
   `frontend/`, mirroring `fraud_investigation/frontend/`'s structure, and is also
   wired into the shared `frontend/src/demos/splunk_secops/` (see that directory's note
   below on hand-syncing if either copy ever needs to change).
@@ -292,8 +293,17 @@ as a whole.
   `interrupt()`) — the closest sibling of any demo in this repo, just moved into a
   security-operations domain (Splunk data forwarded from `z/OS` SMF mainframe logs)
   instead of financial services.
-- **No hosted AutoPIL SaaS trial mode** — intentional simplification for this addition
-  (see its DESIGN.md §7), unlike the other 4 demos.
+- **Optional hosted AutoPIL SaaS trial mode**, same auto-detect/`RemoteContextGuard`
+  design as the other 4 demos — see `splunk_saas_guard.py` and DESIGN.md's "Appendix:
+  hosted trial mode". Unlike `fraud_investigation`, none of this demo's 5 SOC role
+  names match a pre-seeded policy on the shared trial tenant, so
+  `splunk_secops_demo.py` calls `ensure_policy()` to create 5 dedicated
+  `demo_splunk_<role>_policy` policies translated from `soc_mainframe_logs.yaml`,
+  same approach as `institutional_portfolio_review`'s `ipr_saas_guard.py`. Confirmed
+  live: an authorized read allowed, an over-scope read denied, the audit trail read
+  back correctly. Known gap: the hosted policy schema has no `permitted_agent_ids`/
+  `session_ttl_minutes`/`sensitivity_decay` field, so those three local mechanisms
+  aren't enforceable the same way remotely.
 - **Has its own standalone `examples/splunk_secops/frontend/`**, added after the
   initial round — same Vite + React + TypeScript structure as
   `fraud_investigation/frontend/` (Description tab from `policyData.ts`/`types.ts`,
