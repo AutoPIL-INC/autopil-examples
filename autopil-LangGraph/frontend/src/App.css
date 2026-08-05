@@ -393,6 +393,36 @@
   margin-top: 4px;
 }
 
+.audit-summary-table {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.audit-summary-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+  padding: 3px 0;
+  flex-wrap: wrap;
+}
+
+.audit-summary-role {
+  font-weight: 600;
+  color: var(--text);
+  min-width: 150px;
+}
+
+.audit-summary-counts {
+  color: var(--muted);
+}
+
+.audit-summary-detail {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .review-panel {
   border: 1px solid var(--red);
   border-radius: var(--radius);

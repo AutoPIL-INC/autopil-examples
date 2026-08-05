@@ -7,9 +7,14 @@ import {
   OVERRIDE_ACTIONS,
   PROVIDERS,
   initialInput,
+  isAuditSourceAsk,
+  type AuditSummary,
   type FeedEvent,
   type InterruptPayload,
   type InvestigationState,
+  type LocalAuditRoleSummary,
+  type McpAuditRoleSummary,
+  type ReviewInterruptPayload,
 } from "./types";
 
 const API_URL = "http://localhost:2024";
@@ -58,6 +63,32 @@ function FindingRow({ event }: { event: FeedEvent & { type: "finding" } }) {
   );
 }
 
+function isMcpRoleSummary(r: LocalAuditRoleSummary | McpAuditRoleSummary): r is McpAuditRoleSummary {
+  return "sources_accessed" in r;
+}
+
+function AuditSummaryTable({ summary }: { summary: AuditSummary }) {
+  return (
+    <div className="audit-summary-table">
+      {Object.entries(summary.roles).map(([role, r]) => (
+        <div key={role} className="audit-summary-row">
+          <span className="audit-summary-role">{role}</span>
+          <span className="audit-summary-counts">{r.allowed} allowed / {r.denied} denied</span>
+          {isMcpRoleSummary(r) ? (
+            <span className="audit-summary-detail">
+              sources: {r.sources_accessed.join(", ") || "(none)"}
+            </span>
+          ) : (
+            <span className="audit-summary-detail">
+              {r.events.filter((e) => e.decision === "DENY").map((e) => e.reason).join("; ") || "no denials"}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DispositionBanner({ event }: { event: FeedEvent & { type: "disposition" } }) {
   return (
     <div className="disposition-banner">
@@ -72,10 +103,11 @@ function DispositionBanner({ event }: { event: FeedEvent & { type: "disposition"
       <div className="disposition-meta">
         {event.case_id} · specialists run: {event.specialists_run.join(", ")} · denials: {event.denial_count}
         {" · "}
-        audit trail: {event.audit_summary.allowed} allowed / {event.audit_summary.denied} denied
+        audit trail ({event.audit_source}): {event.audit_summary.allowed} allowed / {event.audit_summary.denied} denied
         {" ("}
         {event.audit_summary.total} events)
       </div>
+      <AuditSummaryTable summary={event.audit_summary} />
     </div>
   );
 }
@@ -85,7 +117,7 @@ function ReviewPanel({
   onApprove,
   onOverride,
 }: {
-  payload: InterruptPayload;
+  payload: ReviewInterruptPayload;
   onApprove: (notes: string) => void;
   onOverride: (action: string, notes: string) => void;
 }) {
@@ -128,6 +160,24 @@ function ReviewPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function AuditSourcePanel({ onChoose }: { onChoose: (source: "mcp" | "local") => void }) {
+  return (
+    <div className="review-panel">
+      <div className="review-header">Awaiting audit-trail source choice</div>
+      <div className="review-proposed">
+        How should this case's AutoPIL audit trail be gathered — via AutoPIL's MCP server
+        (get_session_status, one call per role, aggregate counts + sources touched) or
+        directly from the local audit log (guard.get_audit_trail(), per-decision detail
+        including denial reasons)?
+      </div>
+      <div className="review-actions">
+        <button className="approve" onClick={() => onChoose("mcp")}>Via MCP</button>
+        <button className="override" onClick={() => onChoose("local")}>Via local audit trail</button>
+      </div>
     </div>
   );
 }
@@ -193,6 +243,10 @@ export default function ExecutionTab() {
   // disposition event (with the same info) only arrives after decision_node re-runs
   // past the interrupt, which can take a moment.
   const [reviewDecision, setReviewDecision] = useState<{ approved: boolean; action?: string; notes?: string } | null>(null);
+  // Same resolved-tracking problem as reviewResolved above, for the second
+  // interrupt() (audit-source choice) that now follows the review one.
+  const [auditChoiceResolved, setAuditChoiceResolved] = useState(false);
+  const [auditChoiceDecision, setAuditChoiceDecision] = useState<"mcp" | "local" | null>(null);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
   const stream = useStream<InvestigationState>({
@@ -212,7 +266,12 @@ export default function ExecutionTab() {
   // every submit.
   const graphValues = stream.values as (InvestigationState & { __interrupt__?: Array<{ value: InterruptPayload }> }) | undefined;
   const interruptPayload = graphValues?.__interrupt__?.[0]?.value;
-  const awaitingReview = interruptPayload != null && !reviewResolved;
+  // decision_node pauses twice now — the review interrupt first, then the
+  // audit-source-choice interrupt right after it resolves — so which panel to show
+  // depends on the payload's own shape, not just "an interrupt exists."
+  const isAuditAsk = interruptPayload != null && isAuditSourceAsk(interruptPayload);
+  const awaitingReview = interruptPayload != null && !isAuditAsk && !reviewResolved;
+  const awaitingAuditChoice = interruptPayload != null && isAuditAsk && !auditChoiceResolved;
 
   useEffect(() => {
     feedEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -224,6 +283,8 @@ export default function ExecutionTab() {
     setActiveCase(caseId);
     setReviewResolved(false);
     setReviewDecision(null);
+    setAuditChoiceResolved(false);
+    setAuditChoiceDecision(null);
     stream.submit(initialInput(caseId, provider), { streamMode: ["custom", "values"] });
   };
 
@@ -245,6 +306,15 @@ export default function ExecutionTab() {
     });
   };
 
+  const chooseAuditSource = (source: "mcp" | "local") => {
+    setAuditChoiceResolved(true);
+    setAuditChoiceDecision(source);
+    stream.submit(undefined, {
+      command: { resume: { source } },
+      streamMode: ["custom", "values"],
+    });
+  };
+
   return (
     <div className="execution-tab">
       <div className="section-title">Model</div>
@@ -254,7 +324,7 @@ export default function ExecutionTab() {
           className="provider-select"
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
-          disabled={stream.isLoading || awaitingReview}
+          disabled={stream.isLoading || awaitingReview || awaitingAuditChoice}
         >
           {PROVIDERS.map((p) => (
             <option key={p.value} value={p.value}>{p.label}</option>
@@ -270,7 +340,7 @@ export default function ExecutionTab() {
             key={caseId}
             caseId={caseId}
             active={activeCase === caseId && stream.isLoading}
-            disabled={stream.isLoading || awaitingReview}
+            disabled={stream.isLoading || awaitingReview || awaitingAuditChoice}
             onRun={() => runCase(caseId)}
           />
         ))}
@@ -290,7 +360,7 @@ export default function ExecutionTab() {
           <p className="feed-empty">Pull a case from the queue above to start the investigation.</p>
         )}
         {feed.map((event, i) => <FeedItem key={i} event={event} />)}
-        {awaitingReview && (
+        {awaitingReview && interruptPayload != null && !isAuditSourceAsk(interruptPayload) && (
           <>
             <div className="feed-row paused">
               <span className="feed-badge">PAUSED</span>
@@ -308,6 +378,23 @@ export default function ExecutionTab() {
                 : `reviewer overrode to: ${reviewDecision.action}`}
             </span>
             {reviewDecision.notes && <div className="feed-reason">Reason: {reviewDecision.notes}</div>}
+          </div>
+        )}
+        {awaitingAuditChoice && (
+          <>
+            <div className="feed-row paused">
+              <span className="feed-badge">PAUSED</span>
+              <span className="feed-body">graph execution paused — awaiting audit-trail source choice</span>
+            </div>
+            <AuditSourcePanel onChoose={chooseAuditSource} />
+          </>
+        )}
+        {auditChoiceDecision && (
+          <div className="feed-row resolved-approve">
+            <span className="feed-badge">SOURCE</span>
+            <span className="feed-body">
+              audit trail will be shown via {auditChoiceDecision === "mcp" ? "AutoPIL's MCP server" : "the local audit log"}
+            </span>
           </div>
         )}
         <div ref={feedEndRef} />

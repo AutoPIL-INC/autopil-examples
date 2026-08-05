@@ -14,6 +14,8 @@ export interface InvestigationState {
   denial_log: unknown[];
   orchestration_steps: number;
   final_decision: string;
+  audit_source: string;
+  audit_summary: Record<string, unknown>;
 }
 
 export interface ToolCallEvent {
@@ -44,7 +46,9 @@ export interface FindingEvent {
   };
 }
 
-export interface AuditRoleSummary {
+// _collect_audit_summary()'s per-role shape — one row per policy decision, source
+// is guard.get_audit_trail() directly.
+export interface LocalAuditRoleSummary {
   session_id: string;
   allowed: number;
   denied: number;
@@ -56,8 +60,21 @@ export interface AuditRoleSummary {
   }>;
 }
 
+// _collect_audit_summary_via_mcp()'s per-role shape — one get_session_status MCP
+// call per role. Aggregate counts only; no per-decision policy_name/reason.
+export interface McpAuditRoleSummary {
+  session_id: string;
+  owner_role: string;
+  total_events: number;
+  allowed: number;
+  denied: number;
+  sources_accessed: string[];
+  first_event: string;
+  last_event: string;
+}
+
 export interface AuditSummary {
-  roles: Record<string, AuditRoleSummary>;
+  roles: Record<string, LocalAuditRoleSummary | McpAuditRoleSummary>;
   total: number;
   allowed: number;
   denied: number;
@@ -74,13 +91,15 @@ export interface DispositionEvent {
   incident_report_warranted: boolean;
   specialists_run: string[];
   denial_count: number;
+  audit_source: "mcp" | "local";
   audit_summary: AuditSummary;
 }
 
 export type FeedEvent = ToolCallEvent | RoutingEvent | FindingEvent | DispositionEvent;
 
-// Mirrors the dict passed to interrupt(...) in decision_node.
-export interface InterruptPayload {
+// Mirrors the first dict passed to interrupt(...) in decision_node — the
+// disposition-approval pause.
+export interface ReviewInterruptPayload {
   case_id: string;
   system_id: string;
   proposed_action: string;
@@ -88,6 +107,20 @@ export interface InterruptPayload {
   findings: Record<string, { summary?: string; recommendation?: string }>;
   threat_report: { summary?: string; recommendation?: string };
   denial_log: Array<{ agent_role: string; tool: string; reason: string }>;
+}
+
+// Mirrors the second dict passed to interrupt(...) in decision_node — the
+// audit-source-choice pause that immediately follows the review one.
+export interface AuditSourceInterruptPayload {
+  ask: "audit_source";
+  case_id: string;
+  options: Array<"mcp" | "local">;
+}
+
+export type InterruptPayload = ReviewInterruptPayload | AuditSourceInterruptPayload;
+
+export function isAuditSourceAsk(payload: InterruptPayload): payload is AuditSourceInterruptPayload {
+  return "ask" in payload && payload.ask === "audit_source";
 }
 
 // Must match decision_node's exact strings — the override dropdown can only pick one
@@ -196,5 +229,7 @@ export function initialInput(caseId: string, provider: string): InvestigationSta
     denial_log: [],
     orchestration_steps: 0,
     final_decision: "",
+    audit_source: "",
+    audit_summary: {},
   };
 }

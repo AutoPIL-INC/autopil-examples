@@ -40,6 +40,7 @@ policies:
 
   # SOC orchestrator — routes security alerts to specialist agents; no raw log access
   - name: soc_orchestrator_policy
+    policy_id: soc-orchestrator-policy-001
     description: "Routes security alerts to specialist agents and coordinates the SOC investigation; orchestration only, no raw Splunk index access"
     agent_role: soc_orchestrator
     allowed_sources:
@@ -81,6 +82,7 @@ policies:
   # mirrors transaction_analyst_policy in fraud_investigation.yaml. Any agent_id not
   # matching the pattern is denied; calls that omit agent_id are also denied.
   - name: security_auditor_policy
+    policy_id: security-auditor-policy-001
     description: "Reviews RACF access-violation events from the daily scheduled SMF security sweep; no access to any other Splunk source"
     agent_role: security_auditor
     permitted_agent_ids:
@@ -118,6 +120,7 @@ policies:
 
   # Incident triage — broader index set during a live incident; time-boxed session.
   - name: incident_triage_policy
+    policy_id: incident-triage-policy-001
     description: "Cross-source investigation across all 4 SMF log types during an active incident; broader index set than any other specialist, deliberately time-boxed"
     agent_role: incident_triage
     allowed_sources:
@@ -154,6 +157,7 @@ policies:
 
   # Compliance reporter — index-level summaries only; no raw SMF field access.
   - name: compliance_reporter_policy
+    policy_id: compliance-reporter-policy-001
     description: "Reports index-level retention/health summaries across all Splunk indices; no raw SMF record access on any source"
     agent_role: compliance_reporter
     allowed_sources:
@@ -186,6 +190,7 @@ policies:
   # Splunk threat synthesizer — reads compiled agent outputs only; denied every raw
   # source. Same role this plays in fraud_investigation.yaml's sar_generator_policy.
   - name: splunk_threat_synthesizer_policy
+    policy_id: splunk-threat-synthesizer-policy-001
     description: "Synthesizes the final threat/incident report from compiled specialist findings only; no raw Splunk index access"
     agent_role: splunk_threat_synthesizer
     allowed_sources:

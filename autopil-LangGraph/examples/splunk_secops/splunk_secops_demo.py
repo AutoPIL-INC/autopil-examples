@@ -47,6 +47,7 @@ from langchain_openai import ChatOpenAI
 from autopil import ContextGuard, SensitivityLevel
 from autopil.db.sqlite import SQLiteAgentRegistryStore
 from autopil.models import AgentRegistryEntry
+from autopil.policy_engine import PolicyEngine
 # Module name must be globally unique across every demo in this repo, not just this
 # directory — langgraph dev loads all demos into one process; a generic "simulated_data"
 # would collide with fraud_investigation_demo.py's own `import simulated_data as data`
@@ -54,6 +55,7 @@ from autopil.models import AgentRegistryEntry
 # module and crashed on a missing attribute, exactly the collision this repo's
 # CLAUDE.md documents for portfolio_review_uc_data.py/aml_case_data.py).
 import splunk_secops_data as data
+import splunk_mcp_client
 
 load_dotenv()
 
@@ -82,6 +84,12 @@ AGENT_IDS = {
 }
 SECURITY_AUDITOR_AGENT_ID = AGENT_IDS["security_auditor"]
 
+# guard.py denies registered agents with no policy_id bound ("agent_misconfigured") —
+# no role-scan fallback on the SDK path as of autopil's Phase 9 hardening. Read each
+# role's policy_id straight from the loaded YAML rather than hardcoding it a second
+# time here, so the two can't drift out of sync.
+_POLICY_IDS = {p["agent_role"]: p.get("policy_id") for p in PolicyEngine(str(POLICY_FILE)).policies}
+
 
 def _register_agents() -> None:
     now = datetime.now(timezone.utc)
@@ -91,6 +99,7 @@ def _register_agents() -> None:
                 agent_id=agent_id, tenant_id=TENANT_ID, agent_role=role,
                 display_name=role.replace("_", " ").title(), status="approved",
                 version="1.0.0", created_at=now, updated_at=now,
+                policy_id=_POLICY_IDS.get(role),
             ),
             TENANT_ID,
         )
@@ -102,6 +111,12 @@ def _register_agents() -> None:
 # trial tenant, unlike the other 4 demos' hosted mode — see splunk_saas_guard.py's
 # module docstring for what's assumed vs. confirmed.
 _SAAS_MODE = bool(os.getenv("AUTOPIL_ADMIN_KEY")) and bool(os.getenv("AUTOPIL_EVALUATE_KEY"))
+
+# Optional: point at an already-running `autopil-mcp --api-url ... --http-port ...`
+# server (started separately, not by this demo — see .env.example) to use
+# Streamable HTTP for the MCP demonstration call instead of spawning a fresh
+# `autopil-mcp` subprocess over stdio on every case. Only consulted in SaaS mode.
+_MCP_HTTP_URL = os.getenv("AUTOPIL_MCP_HTTP_URL")
 
 # Field-for-field translation of policies/SecOps/soc_mainframe_logs.yaml into
 # CreatePolicyRequest bodies — permitted_agent_ids/session_ttl_minutes/
@@ -237,7 +252,7 @@ def _make_llm(provider: str = ""):
         return ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
     if provider == "ollama":
         return ChatOpenAI(model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
-                          openai_api_base="http://localhost:4000/v1",
+                          openai_api_base="http://localhost:3000/v1",
                           openai_api_key="not-needed",)
     raise ValueError(f"Unknown provider: {provider!r}")
 
@@ -339,6 +354,8 @@ class InvestigationState(TypedDict):
     denial_log: list[DenialEvent]
     orchestration_steps: int
     final_decision: str
+    audit_source: str
+    audit_summary: dict
 
 
 # ── shared tool-calling loop for specialists and the threat synthesizer ──────────
@@ -758,6 +775,15 @@ def decision_node(state: InvestigationState) -> dict:
     other demo in this repo: an LLM can draft the narrative; it shouldn't decide the
     security action. Neither should a hardcoded rule, without a human sign-off, before
     anything material happens.
+
+    A second interrupt() follows the first, asking whether the audit trail that comes
+    with the disposition should be read straight from the local audit_log
+    (guard.get_audit_trail(), one row per policy decision across all 5 role sessions)
+    or through AutoPIL's MCP server's get_session_status tool (one call per role
+    session, aggregate counts only — no per-decision detail). Both interrupts are
+    resolved before any print()/emit() side effect runs — interrupt() re-executes the
+    node from the top on every resume, so anything with a side effect has to sit after
+    the LAST interrupt() call in the function, or it replays once per interrupt.
     """
     expected = data.get_expected_outcome(state["case_id"])
     perf = SOURCES["smf_performance"].get(state["system_id"], {})
@@ -773,9 +799,6 @@ def decision_node(state: InvestigationState) -> dict:
     else:
         proposed_action = "COMPLIANT — no incident indicators"
 
-    # Everything above is pure/cheap — safe to re-run, since interrupt() re-executes
-    # the node from the top on resume. Everything below only runs once, on the resume
-    # pass, since the first pass halts exactly at interrupt().
     human_decision = interrupt({
         "case_id": state["case_id"], "system_id": state["system_id"],
         "proposed_action": proposed_action, "specialists_run": state["specialists_run"],
@@ -785,6 +808,15 @@ def decision_node(state: InvestigationState) -> dict:
     approved = human_decision.get("approved", True)
     action = proposed_action if approved else (human_decision.get("override_action") or proposed_action)
 
+    audit_choice = interrupt({
+        "ask": "audit_source", "case_id": state["case_id"],
+        "options": ["mcp", "local"],
+    })
+    audit_source = audit_choice.get("source", "local")
+
+    # Everything above is pure/cheap — safe to re-run on every resume. Everything
+    # below only runs once, on the final resume pass, since every earlier pass halts
+    # at one of the two interrupt() calls above.
     print(f"\n{'─'*70}\n  OUTCOME  |  {state['case_id']}\n{'─'*70}")
     print(f"  Proposed: {proposed_action}")
     if approved:
@@ -800,6 +832,8 @@ def decision_node(state: InvestigationState) -> dict:
     for d in state["denial_log"]:
         print(f"    ✗  [{d['agent_role']}] {d['tool']}: {d['reason']}")
 
+    audit_summary = _collect_audit_summary_via_mcp() if audit_source == "mcp" else _collect_audit_summary()
+
     _emit({
         "type": "disposition", "case_id": state["case_id"], "action": action,
         "proposed_action": proposed_action, "human_approved": approved,
@@ -807,9 +841,10 @@ def decision_node(state: InvestigationState) -> dict:
         "human_notes": human_decision.get("notes"),
         "incident_report_warranted": expected.get("incident_report_warranted"),
         "specialists_run": state["specialists_run"],
-        "denial_count": len(state["denial_log"]), "audit_summary": _collect_audit_summary(),
+        "denial_count": len(state["denial_log"]),
+        "audit_source": audit_source, "audit_summary": audit_summary,
     })
-    return {"final_decision": action}
+    return {"final_decision": action, "audit_source": audit_source, "audit_summary": audit_summary}
 
 
 # ── graph ─────────────────────────────────────────────────────────────────────────
@@ -857,12 +892,12 @@ graph = build_graph()
 # ── audit trail ───────────────────────────────────────────────────────────────────
 
 def _collect_audit_summary() -> dict:
-    """Per-role AutoPIL audit trail, pulled from guard.get_audit_trail().
+    """Per-role AutoPIL audit trail, pulled directly via guard.get_audit_trail() —
+    one row per policy decision, across all 5 role sessions.
 
-    Shared by print_audit_trail() (CLI) and decision_node()'s "disposition" stream
-    event — decision_node runs inside the graph, so it's the only place this data can
-    reach a live stream consumer; print_audit_trail runs after app.invoke() returns,
-    outside any node's runnable context.
+    Used when decision_node()'s audit-source choice picks "local". Same shape
+    print_audit_trail() (CLI) renders and decision_node()'s "disposition" stream
+    event carries.
     """
     summary: dict = {"roles": {}, "total": 0, "allowed": 0, "denied": 0}
     for role, sid in SESSIONS.items():
@@ -891,17 +926,72 @@ def _collect_audit_summary() -> dict:
     return summary
 
 
-def print_audit_trail(case_id: str) -> None:
-    print(f"\n{'═'*70}\n  AUTOPIL AUDIT TRAIL — {case_id}\n{'═'*70}")
-    summary = _collect_audit_summary()
-    for role, r in summary["roles"].items():
+def _collect_audit_summary_via_mcp() -> dict:
+    """Same 5-role coverage as _collect_audit_summary(), but sourced from AutoPIL's
+    MCP server's get_session_status tool — one call per role, over a single shared
+    MCP connection, instead of a direct guard.get_audit_trail() read. Aggregate
+    counts only; no per-decision policy_name/reason (get_session_status doesn't
+    return that level of detail — see mcp_server.py's TOOL_SESSION_STATUS handler).
+
+    Same transport-selection logic decision_node used to run once (for
+    soc_orchestrator only) before this function existed — see AUTOPIL_MCP_HTTP_URL's
+    comment in .env.example for what each of the 3 branches assumes.
+    """
+    # Availability/failure handling (mcp not installed, autopil-mcp not found,
+    # subprocess/HTTP call failure) lives in splunk_mcp_client's collect_* functions
+    # — each prints its own message and returns {} rather than raising, so a bad
+    # transport degrades to an empty audit_summary instead of crashing decision_node.
+    sessions = dict(SESSIONS)
+    if _SAAS_MODE and _MCP_HTTP_URL:
+        statuses = splunk_mcp_client.collect_all_session_statuses_via_mcp_http(
+            _MCP_HTTP_URL, sessions, AGENT_IDS["soc_orchestrator"])
+    elif _SAAS_MODE:
+        statuses = splunk_mcp_client.collect_all_session_statuses_via_mcp_remote(
+            _API_URL, os.environ["AUTOPIL_EVALUATE_KEY"], os.environ["AUTOPIL_ADMIN_KEY"], sessions)
+    else:
+        statuses = splunk_mcp_client.collect_all_session_statuses_via_mcp(
+            str(POLICY_FILE), str(AUDIT_DB), TENANT_ID, sessions)
+
+    # Normalized with .get() defaults rather than indexed directly — get_session_status
+    # crosses a subprocess/HTTP boundary to whatever autopil-mcp build is actually on
+    # the far end, which isn't guaranteed to be this checkout's exact schema.
+    summary: dict = {"roles": {}, "total": 0, "allowed": 0, "denied": 0}
+    for role, status in statuses.items():
+        if not status:
+            continue
+        allowed = status.get("allowed", 0)
+        denied = status.get("denied", 0)
+        summary["roles"][role] = {
+            "session_id": status.get("session_id", SESSIONS[role]),
+            "owner_role": status.get("owner_role", role),
+            "total_events": status.get("total_events", allowed + denied),
+            "allowed": allowed,
+            "denied": denied,
+            "sources_accessed": status.get("sources_accessed", []),
+            "first_event": status.get("first_event", "?"),
+            "last_event": status.get("last_event", "?"),
+        }
+        summary["total"] += summary["roles"][role]["total_events"]
+        summary["allowed"] += allowed
+        summary["denied"] += denied
+    return summary
+
+
+def print_audit_trail(case_id: str, audit_summary: dict, audit_source: str) -> None:
+    print(f"\n{'═'*70}\n  AUTOPIL AUDIT TRAIL — {case_id}  (source: {audit_source})\n{'═'*70}")
+    for role, r in audit_summary["roles"].items():
         print(f"\n  [{role.upper()} — session {r['session_id'][:8]}…]  {r['allowed']} allowed  {r['denied']} denied")
-        for e in r["events"]:
-            icon = "✓" if e["decision"] == "ALLOW" else "✗"
-            print(f"    {icon} {e['decision']:<6} {e['source_id']:<22} policy={e['policy_name']}")
-            if e["decision"] == "DENY":
-                print(f"          reason: {e['reason']}")
-    print(f"\n{'═'*70}\n  Total: {summary['total']} audit events | {summary['allowed']} allowed | {summary['denied']} denied\n{'═'*70}\n")
+        if audit_source == "mcp":
+            print(f"    sources accessed: {', '.join(r['sources_accessed']) or '(none)'}")
+            print(f"    window: {r['first_event']}  →  {r['last_event']}")
+        else:
+            for e in r["events"]:
+                icon = "✓" if e["decision"] == "ALLOW" else "✗"
+                print(f"    {icon} {e['decision']:<6} {e['source_id']:<22} policy={e['policy_name']}")
+                if e["decision"] == "DENY":
+                    print(f"          reason: {e['reason']}")
+    print(f"\n{'═'*70}\n  Total: {audit_summary['total']} audit events | {audit_summary['allowed']} allowed | "
+          f"{audit_summary['denied']} denied\n{'═'*70}\n")
 
 
 # ── run ───────────────────────────────────────────────────────────────────────────
@@ -917,12 +1007,23 @@ def run_case(case_id: str) -> None:
         "case_id": case_id, "provider": "", "system_id": "", "alert": {}, "case_metadata": {},
         "route_plan": [], "specialists_run": [], "findings": {}, "threat_report": {},
         "denial_log": [], "orchestration_steps": 0, "final_decision": "",
+        "audit_source": "", "audit_summary": {},
     }, config=config)
-    if "__interrupt__" in result:
-        # CLI stays unattended — auto-approve the proposed action. Interactive
-        # review only happens through the browser (see the live viewer).
-        cli_graph.invoke(Command(resume={"approved": True}), config=config)
-    print_audit_trail(case_id)
+    # CLI stays unattended — auto-resolve whichever interrupt decision_node is
+    # paused on. Interactive review only happens through the browser (see the live
+    # viewer). decision_node now pauses twice (disposition approval, then the
+    # audit-source choice), so this has to loop rather than fire once.
+    while "__interrupt__" in result:
+        pending = result["__interrupt__"][0].value
+        if pending.get("ask") == "audit_source":
+            # Default to "mcp" for the unattended CLI path — keeps exercising the
+            # MCP transport on every automated run, same as before this choice
+            # existed. A human in the browser can pick "local" instead.
+            result = cli_graph.invoke(Command(resume={"source": "mcp"}), config=config)
+        else:
+            result = cli_graph.invoke(Command(resume={"approved": True}), config=config)
+    print_audit_trail(case_id, result["audit_summary"], result["audit_source"])
+
 
 
 if __name__ == "__main__":
