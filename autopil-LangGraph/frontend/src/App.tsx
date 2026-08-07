@@ -8,6 +8,8 @@ import PortfolioReviewDescriptionTab from "./demos/institutional_portfolio_revie
 import PortfolioReviewExecutionTab from "./demos/institutional_portfolio_review/ExecutionTab";
 import AmlComplianceDescriptionTab from "./demos/aml_compliance/DescriptionTab";
 import AmlComplianceExecutionTab from "./demos/aml_compliance/ExecutionTab";
+import SplunkSecopsDescriptionTab from "./demos/splunk_secops/DescriptionTab";
+import SplunkSecopsExecutionTab from "./demos/splunk_secops/ExecutionTab";
 import "./App.css";
 
 const API_URL = "http://localhost:2024";
@@ -45,7 +47,7 @@ function useTheme() {
   return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))] as const;
 }
 
-type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance";
+type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops";
 type Tab = "description" | "execution";
 
 const DEMOS: Record<Demo, { label: string; sub: string; Description: ComponentType; Execution: ComponentType }> = {
@@ -72,6 +74,12 @@ const DEMOS: Record<Demo, { label: string; sub: string; Description: ComponentTy
     sub: "AML & Compliance",
     Description: AmlComplianceDescriptionTab,
     Execution: AmlComplianceExecutionTab,
+  },
+  splunk_secops: {
+    label: "SOC / Splunk SecOps",
+    sub: "SOC / Splunk SecOps",
+    Description: SplunkSecopsDescriptionTab,
+    Execution: SplunkSecopsExecutionTab,
   },
 };
 

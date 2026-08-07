@@ -117,19 +117,6 @@
   transition: all 0.15s;
 }
 
-.tab-nav-demos {
-  padding-top: 20px;
-}
-
-.tab-nav-demos .tab {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.tab-nav-demos .tab.active {
-  border-bottom: 2px solid var(--accent);
-}
-
 .tab.active {
   background: var(--surface);
   color: var(--text);
@@ -487,11 +474,6 @@
 .review-actions button.override {
   border-color: var(--red);
   color: var(--red);
-}
-
-.review-actions button.escalate {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 .review-override-form {

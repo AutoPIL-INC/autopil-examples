@@ -1,0 +1,229 @@
+# SOC Mainframe Log Monitoring — AutoPIL policy for the splunk_secops demo.
+# IBM mainframe tools forward SMF (System Management Facility) log types into Splunk;
+# this policy governs which of the 5 SOC agent roles may read which Splunk source,
+# under which task purpose, mirroring fraud_investigation.yaml's structure exactly.
+industry: security
+organization: SecOps
+division: Security Operations Center
+process_group: soc_mainframe_monitoring
+
+regulations:
+  - id: PCI-DSS-v4
+    name: "PCI-DSS v4.0 — Payment Card Industry Data Security Standard"
+    applicable_rules:
+      - rule: "Primary scope — systems handling cardholder data"
+        how_enforced: "incident_triage_policy is the only role authorized across all 4 SMF log sources at once (smf_security, smf_performance, smf_transactions, smf_systems) — scoped to active-incident investigation via a time-boxed session_ttl_minutes and a sensitivity_decay schedule, not standing broad access"
+      - rule: "Log retention — 1 year, 3 months immediately queryable"
+        how_enforced: "splunk_index_summery is the only source compliance_reporter may read — a retention/health rollup over all indices, never raw per-event SMF records"
+      - rule: "Log integrity — mandatory tamper-proof / FIM logging"
+        how_enforced: "cryptographic audit chain on every ALLOW/DENY event across all 5 roles, same as every other demo in this repo"
+  - id: SOX-ITGC
+    name: "SOX ITGC — Sarbanes-Oxley IT General Controls"
+    applicable_rules:
+      - rule: "Scope — systems impacting financial reporting"
+        how_enforced: "smf_transactions (mainframe transaction/batch logs feeding financial reporting systems) is denied to compliance_reporter and splunk_threat_synthesizer — only security_auditor and incident_triage may read it, and only under a bound task_type"
+      - rule: "Log retention — up to 7 years"
+        how_enforced: "security_auditor_policy's smf_security task_binding models the long-retention RACF audit trail this control requires; retention itself is a Splunk index-config concern, not something ContextGuard enforces directly"
+      - rule: "Mandatory audit trail to prevent fraud"
+        how_enforced: "permitted_agent_ids on security_auditor_policy locks the daily scheduled RACF review to a named, approved service agent — an unregistered or anonymous caller is denied before the source check ever runs"
+  - id: INTERNAL-SEC-POLICY
+    name: "Internal Security Policy — Crown Jewels / Enterprise-Wide Systems"
+    applicable_rules:
+      - rule: "Scope — all enterprise systems / crown jewels"
+        how_enforced: "soc_orchestrator_policy is denied every raw SMF source and splunk_index_summery — orchestration only, routes to specialists rather than reading mainframe logs itself"
+      - rule: "Log retention — custom, typically 30-90 days online"
+        how_enforced: "incident_triage_policy's session_ttl_minutes (30) plus sensitivity_decay models a short, time-boxed online-investigation window distinct from the longer PCI/SOX retention windows above"
+      - rule: "Enforcement — internal CISO, SecOps, leadership"
+        how_enforced: "splunk_threat_synthesizer_policy restricts the final threat report to agent_outputs/case_metadata/regulatory_templates only — the report leadership reads is built from compiled specialist findings, never raw log access of its own"
+
+policies:
+
+  # SOC orchestrator — routes security alerts to specialist agents; no raw log access
+  - name: soc_orchestrator_policy
+    policy_id: soc-orchestrator-policy-001
+    description: "Routes security alerts to specialist agents and coordinates the SOC investigation; orchestration only, no raw Splunk index access"
+    agent_role: soc_orchestrator
+    allowed_sources:
+      - security_alerts
+      - case_metadata
+      - agent_outputs
+    denied_sources:
+      - smf_security
+      - smf_performance
+      - smf_transactions
+      - smf_systems
+      - splunk_index_summery
+      - regulatory_templates
+    allowed_tasks:
+      - route_alert
+      - escalate_case
+      - close_case
+      - assign_specialist
+    denied_tasks:
+      - racf_violation_review
+      - incident_investigation
+      - compliance_summary
+      - threat_synthesis
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: route_alert
+        permitted_sources: [security_alerts, case_metadata]
+      - task: escalate_case
+        permitted_sources: [security_alerts, case_metadata, agent_outputs]
+      - task: close_case
+        permitted_sources: [case_metadata, agent_outputs]
+      - task: assign_specialist
+        permitted_sources: [case_metadata]
+    session_ttl_minutes: 480
+
+  # Security auditor — daily scheduled RACF access-violation review; smf_security only.
+  # permitted_agent_ids: locks this scheduled job to an approved, named service agent —
+  # mirrors transaction_analyst_policy in fraud_investigation.yaml. Any agent_id not
+  # matching the pattern is denied; calls that omit agent_id are also denied.
+  - name: security_auditor_policy
+    policy_id: security-auditor-policy-001
+    description: "Reviews RACF access-violation events from the daily scheduled SMF security sweep; no access to any other Splunk source"
+    agent_role: security_auditor
+    permitted_agent_ids:
+      - soc-security-auditor-prod    # exact match — production scheduled-job identity
+      - soc-security-auditor-*       # wildcard — matches -canary, -v2, etc.
+    allowed_sources:
+      - smf_security
+    denied_sources:
+      - smf_performance
+      - smf_transactions
+      - smf_systems
+      - splunk_index_summery
+      - agent_outputs
+      - regulatory_templates
+      - security_alerts
+      - case_metadata
+    allowed_tasks:
+      - racf_violation_review
+      - daily_security_audit
+    denied_tasks:
+      - incident_investigation
+      - compliance_summary
+      - threat_synthesis
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: racf_violation_review
+        permitted_sources: [smf_security]
+      - task: daily_security_audit
+        permitted_sources: [smf_security]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: medium
+
+  # Incident triage — broader index set during a live incident; time-boxed session.
+  - name: incident_triage_policy
+    policy_id: incident-triage-policy-001
+    description: "Cross-source investigation across all 4 SMF log types during an active incident; broader index set than any other specialist, deliberately time-boxed"
+    agent_role: incident_triage
+    allowed_sources:
+      - smf_security
+      - smf_performance
+      - smf_transactions
+      - smf_systems
+      - security_alerts
+      - case_metadata
+    denied_sources:
+      - splunk_index_summery
+      - agent_outputs
+      - regulatory_templates
+    allowed_tasks:
+      - incident_investigation
+      - cross_source_correlation
+    denied_tasks:
+      - racf_violation_review
+      - compliance_summary
+      - threat_synthesis
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: incident_investigation
+        permitted_sources: [smf_security, smf_performance, smf_transactions, smf_systems, security_alerts, case_metadata]
+      - task: cross_source_correlation
+        permitted_sources: [smf_security, smf_performance, smf_transactions, smf_systems]
+    session_ttl_minutes: 30
+    sensitivity_decay:
+      - after_minutes: 15
+        max_sensitivity: high
+      - after_minutes: 25
+        max_sensitivity: medium
+
+  # Compliance reporter — index-level summaries only; no raw SMF field access.
+  - name: compliance_reporter_policy
+    policy_id: compliance-reporter-policy-001
+    description: "Reports index-level retention/health summaries across all Splunk indices; no raw SMF record access on any source"
+    agent_role: compliance_reporter
+    allowed_sources:
+      - splunk_index_summery
+    denied_sources:
+      - smf_security
+      - smf_performance
+      - smf_transactions
+      - smf_systems
+      - agent_outputs
+      - regulatory_templates
+      - security_alerts
+      - case_metadata
+    allowed_tasks:
+      - compliance_summary
+      - index_health_check
+    denied_tasks:
+      - racf_violation_review
+      - incident_investigation
+      - threat_synthesis
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: compliance_summary
+        permitted_sources: [splunk_index_summery]
+      - task: index_health_check
+        permitted_sources: [splunk_index_summery]
+    session_ttl_minutes: 120
+
+  # Splunk threat synthesizer — reads compiled agent outputs only; denied every raw
+  # source. Same role this plays in fraud_investigation.yaml's sar_generator_policy.
+  - name: splunk_threat_synthesizer_policy
+    policy_id: splunk-threat-synthesizer-policy-001
+    description: "Synthesizes the final threat/incident report from compiled specialist findings only; no raw Splunk index access"
+    agent_role: splunk_threat_synthesizer
+    allowed_sources:
+      - agent_outputs
+      - regulatory_templates
+      - case_metadata
+    denied_sources:
+      - smf_security
+      - smf_performance
+      - smf_transactions
+      - smf_systems
+      - splunk_index_summery
+      - security_alerts
+    allowed_tasks:
+      - threat_synthesis
+      - threat_review
+      - case_summary
+    denied_tasks:
+      - racf_violation_review
+      - incident_investigation
+      - compliance_summary
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: threat_synthesis
+        permitted_sources: [agent_outputs, case_metadata, regulatory_templates]
+      - task: threat_review
+        permitted_sources: [agent_outputs, case_metadata]
+      - task: case_summary
+        permitted_sources: [agent_outputs, case_metadata]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: high
+      - after_minutes: 45
+        max_sensitivity: medium

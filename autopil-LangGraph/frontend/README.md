@@ -3,14 +3,15 @@
 One Vite + React + TypeScript app covering every demo in `autopil-LangGraph/`, so you
 don't need a separate `npm run dev` process per demo. This is **additive** — each
 demo's own standalone frontend (`examples/fraud_investigation/frontend/`,
-`examples/client_analysis/frontend/`) still works exactly as documented in its own
+`examples/client_analysis/frontend/`, etc.) still works exactly as documented in its own
 README, unchanged. Use whichever is more convenient: one demo in isolation, or all of
 them from one server here.
 
-Both demos already run on the same `langgraph dev` process (`http://localhost:2024`,
-`langgraph.json` exposes both `fraud_investigation` and `client_analysis` graphs) — this
-app just switches which `assistantId` it streams from based on which demo tab is
-selected. No backend changes needed.
+All 5 demos already run on the same `langgraph dev` process (`http://localhost:2024`,
+`langgraph.json` exposes `fraud_investigation`, `client_analysis`,
+`institutional_portfolio_review`, `aml_compliance`, and `splunk_secops`) — this app just
+switches which `assistantId` it streams from based on which demo tab is selected. No
+backend changes needed.
 
 ## Structure
 
@@ -20,6 +21,10 @@ selected. No backend changes needed.
   (`types.ts`, `policyData.ts`, `DescriptionTab.tsx`, `ExecutionTab.tsx`).
 - `src/demos/client_analysis/` — same, copied from
   `examples/client_analysis/frontend/src`.
+- `src/demos/institutional_portfolio_review/` and `src/demos/aml_compliance/` — same
+  pattern, copied from their own `examples/*/frontend/src`.
+- `src/demos/splunk_secops/` — same, copied from
+  `examples/splunk_secops/frontend/src`.
 - `src/LogoMark.tsx`, `src/index.css`, `src/App.css`, `src/main.tsx` — shared shell,
   identical to what each standalone frontend uses.
 
