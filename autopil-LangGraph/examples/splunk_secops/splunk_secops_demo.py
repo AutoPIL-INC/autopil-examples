@@ -42,7 +42,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
-from langchain_openai import ChatOpenAI
 
 from autopil import ContextGuard, SensitivityLevel
 from autopil.db.sqlite import SQLiteAgentRegistryStore
@@ -251,9 +250,7 @@ def _make_llm(provider: str = ""):
             raise RuntimeError("GROQ_API_KEY not set (see .env.example)")
         return ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
     if provider == "ollama":
-        return ChatOpenAI(model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
-                          openai_api_base="http://localhost:3000/v1",
-                          openai_api_key="not-needed",)
+        return ChatOllama(model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"))
     raise ValueError(f"Unknown provider: {provider!r}")
 
 
