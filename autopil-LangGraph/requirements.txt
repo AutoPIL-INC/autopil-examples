@@ -5,6 +5,7 @@ langchain-anthropic
 langchain-google-genai
 langchain-groq
 langchain-ollama
+langchain-openai
 langchain-aws
 python-dotenv
 httpx
