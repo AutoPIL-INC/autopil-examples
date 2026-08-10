@@ -130,38 +130,43 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="tab-nav tab-nav-demos">
-        {(Object.keys(DEMOS) as Demo[]).map((key) => (
-          <button
-            key={key}
-            className={`tab ${demo === key ? "active" : ""}`}
-            onClick={() => selectDemo(key)}
-          >
-            {DEMOS[key].label}
-          </button>
-        ))}
-      </nav>
+      <div className="body-layout">
+        <aside className="sidebar">
+          <div className="sidebar-title">Use Cases</div>
+          {(Object.keys(DEMOS) as Demo[]).map((key) => (
+            <button
+              key={key}
+              className={`sidebar-item ${demo === key ? "active" : ""}`}
+              onClick={() => selectDemo(key)}
+            >
+              {DEMOS[key].label}
+            </button>
+          ))}
+        </aside>
 
-      <nav className="tab-nav">
-        <button className={`tab ${tab === "description" ? "active" : ""}`} onClick={() => setTab("description")}>
-          Description
-        </button>
-        <button className={`tab ${tab === "execution" ? "active" : ""}`} onClick={() => setTab("execution")}>
-          Execution
-        </button>
-      </nav>
+        <div className="content-area">
+          <nav className="tab-nav">
+            <button className={`tab ${tab === "description" ? "active" : ""}`} onClick={() => setTab("description")}>
+              Description
+            </button>
+            <button className={`tab ${tab === "execution" ? "active" : ""}`} onClick={() => setTab("execution")}>
+              Execution
+            </button>
+          </nav>
 
-      <main className="main">
-        {tab === "description" && <Description />}
-        {(Object.keys(DEMOS) as Demo[]).map((key) => {
-          const { Execution } = DEMOS[key];
-          return (
-            <div key={key} style={{ display: tab === "execution" && demo === key ? "block" : "none" }}>
-              <Execution />
-            </div>
-          );
-        })}
-      </main>
+          <main className="main">
+            {tab === "description" && <Description />}
+            {(Object.keys(DEMOS) as Demo[]).map((key) => {
+              const { Execution } = DEMOS[key];
+              return (
+                <div key={key} style={{ display: tab === "execution" && demo === key ? "block" : "none" }}>
+                  <Execution />
+                </div>
+              );
+            })}
+          </main>
+        </div>
+      </div>
 
       <footer className="footer">
         <span>AutoPIL × LangGraph — reasoning-driven governance demos</span>
