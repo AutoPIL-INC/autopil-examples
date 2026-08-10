@@ -112,7 +112,7 @@ export default function App() {
             >
               {INDUSTRIES.map((ind) => (
                 <option key={ind.value} value={ind.value} disabled={!ind.enabled}>
-                  {ind.label} — {ind.company}{!ind.enabled ? " (coming soon)" : ""}
+                  {ind.label} — {ind.company} Demo{!ind.enabled ? " (coming soon)" : ""}
                 </option>
               ))}
             </select>
