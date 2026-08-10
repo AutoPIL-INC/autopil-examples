@@ -44,6 +44,28 @@
   letter-spacing: 0.6px;
 }
 
+.industry-select {
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  max-width: 220px;
+}
+
+.industry-select:hover,
+.industry-select:focus {
+  color: var(--text);
+}
+
+.industry-select option:disabled {
+  color: var(--muted);
+}
+
 .header-right {
   display: flex;
   align-items: center;

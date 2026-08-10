@@ -10,6 +10,7 @@ import AmlComplianceDescriptionTab from "./demos/aml_compliance/DescriptionTab";
 import AmlComplianceExecutionTab from "./demos/aml_compliance/ExecutionTab";
 import SplunkSecopsDescriptionTab from "./demos/splunk_secops/DescriptionTab";
 import SplunkSecopsExecutionTab from "./demos/splunk_secops/ExecutionTab";
+import { INDUSTRIES } from "./industries";
 import "./App.css";
 
 const API_URL = "http://localhost:2024";
@@ -50,34 +51,29 @@ function useTheme() {
 type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops";
 type Tab = "description" | "execution";
 
-const DEMOS: Record<Demo, { label: string; sub: string; Description: ComponentType; Execution: ComponentType }> = {
+const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution: ComponentType }> = {
   fraud: {
     label: "Fraud Investigation",
-    sub: "Fraud Investigation",
     Description: FraudDescriptionTab,
     Execution: FraudExecutionTab,
   },
   client_analysis: {
     label: "Client Analysis",
-    sub: "Client Analysis",
     Description: ClientAnalysisDescriptionTab,
     Execution: ClientAnalysisExecutionTab,
   },
   institutional_portfolio_review: {
     label: "Institutional Portfolio Review",
-    sub: "Institutional Portfolio Review",
     Description: PortfolioReviewDescriptionTab,
     Execution: PortfolioReviewExecutionTab,
   },
   aml_compliance: {
     label: "AML & Compliance",
-    sub: "AML & Compliance",
     Description: AmlComplianceDescriptionTab,
     Execution: AmlComplianceExecutionTab,
   },
   splunk_secops: {
     label: "SOC / Splunk SecOps",
-    sub: "SOC / Splunk SecOps",
     Description: SplunkSecopsDescriptionTab,
     Execution: SplunkSecopsExecutionTab,
   },
@@ -88,6 +84,10 @@ export default function App() {
   const [theme, toggleTheme] = useTheme();
   const [demo, setDemo] = useState<Demo>("fraud");
   const [tab, setTab] = useState<Tab>("description");
+  // Industry context only — see industries.ts. Doesn't drive which demo tabs show
+  // below; only "financial_services" has demos behind it today, so it's the only
+  // enabled option. Not persisted: nothing downstream reads it yet.
+  const [industry, setIndustry] = useState<string>("financial_services");
 
   const active = DEMOS[demo];
   const { Description } = active;
@@ -104,7 +104,18 @@ export default function App() {
           <div className="logo-mark"><LogoMark id="autopil-demos" /></div>
           <div>
             <div className="logo-name">Auto<span className="accent">PIL</span></div>
-            <div className="logo-sub">{active.sub}</div>
+            <select
+              className="industry-select"
+              value={industry}
+              onChange={(e) => setIndustry(e.target.value)}
+              title="Industry (context only — doesn't change which demo tabs show below)"
+            >
+              {INDUSTRIES.map((ind) => (
+                <option key={ind.value} value={ind.value} disabled={!ind.enabled}>
+                  {ind.label} — {ind.company}{!ind.enabled ? " (coming soon)" : ""}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
         <div className="header-right">
