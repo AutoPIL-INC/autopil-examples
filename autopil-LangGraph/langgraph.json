@@ -5,7 +5,8 @@
     "client_analysis": "./examples/client_analysis/client_analysis_demo.py:graph",
     "institutional_portfolio_review": "./examples/institutional_portfolio_review/institutional_portfolio_review_demo.py:graph",
     "aml_compliance": "./examples/aml_compliance/aml_compliance_demo.py:graph",
-    "splunk_secops": "./examples/splunk_secops/splunk_secops_demo.py:graph"
+    "splunk_secops": "./examples/splunk_secops/splunk_secops_demo.py:graph",
+    "hospital_revenue_cycle": "./examples/hospital_revenue_cycle/hospital_revenue_cycle_demo.py:graph"
   },
   "env": ".env"
 }

@@ -52,7 +52,18 @@ as a whole.
   module-name-collision note below for why. See its
   [DESIGN.md](./examples/splunk_secops/DESIGN.md) and
   [README.md](./examples/splunk_secops/README.md).
-- `frontend/` — a sixth, **additive** frontend covering every demo from one
+- `examples/hospital_revenue_cycle/` — 6 roles (`revenue_orchestrator`,
+  `clinical_documentation_agent`, `cdi_specialist_agent`, `medical_coding_agent`,
+  `charge_reconciliation_agent`, `billing_compliance_agent`) governing hospital
+  revenue-cycle data (clinical documentation, coding, charge reconciliation, billing).
+  Adapted from a fully **scripted**, REST-only demo in the core AutoPIL SDK repo into
+  this repo's reasoning-driven pattern — see its DESIGN.md §2 for exactly what changed
+  and why. First demo in this repo outside Financial Services — its own module is
+  `hospital_revenue_cycle_data.py`, checked against every existing demo's module names
+  before being added (see the module-name-collision note below). See its
+  [DESIGN.md](./examples/hospital_revenue_cycle/DESIGN.md) and
+  [README.md](./examples/hospital_revenue_cycle/README.md).
+- `frontend/` — a seventh, **additive** frontend covering every demo from one
   `langgraph dev` server, so you don't need two `npm run dev` processes. Each demo's
   own standalone frontend (`examples/*/frontend/`) is untouched and still works
   independently — see [frontend/README.md](./frontend/README.md). The demo-specific
@@ -334,3 +345,64 @@ as a whole.
   documents for its own equivalents.
 - The audit database `examples/splunk_secops/splunk_secops_audit.db` is disposable —
   safe to delete between runs.
+
+## Working with the hospital_revenue_cycle demo
+
+- Follows `fraud_investigation`/`splunk_secops`'s exact architecture (LLM-driven
+  `revenue_orchestrator` routing, `orchestrator_review_node` re-routing loop, a fixed
+  final specialist before the synthesizer step, rule-based `decision_node` + human
+  `interrupt()`) — moved into a healthcare revenue-cycle domain instead of financial
+  services or security operations. See its DESIGN.md §2 for the full "adapted from a
+  scripted demo" rationale — this is the one demo in the repo ported from an existing
+  (but non-reasoning-driven) example rather than designed from scratch.
+- **No separate synthesizer role — `revenue_orchestrator` plays both parts.** Unlike
+  `sar_generator`/`splunk_threat_synthesizer`, this demo's final revenue-summary
+  compilation (`revenue_summary_node`) reuses `revenue_orchestrator`'s own agent_id and
+  policy rather than introducing a 7th role, since the original scripted demo's
+  `revenue_orchestrator_policy` already had `agent_outputs`/`revenue_summary` as its
+  own real task — see DESIGN.md §2 for why a 7th role wasn't added just to mirror the
+  other demos' shape.
+- `billing_compliance_agent` is the fixed final specialist (always runs after the
+  4 LLM-routed specialists, before `revenue_summary`) — same slot `sar_generator`/
+  `splunk_threat_synthesizer` occupy in their own demos, just not the same node that
+  also does the final compilation here.
+- **A real bug caught during verification**: `revenue_orchestrator_policy` and
+  `billing_compliance_agent_policy` were both initially written with
+  `max_sensitivity: medium`, and `cdi_specialist_agent_policy` with `high` — but each
+  role's own real, allowed sources (`agent_outputs`/`billing_records` rated `high`,
+  `clinical_notes` rated `critical`) exceeded that ceiling, so every legitimate call
+  those three roles made was denied on a sensitivity mismatch regardless of model
+  behavior — same failure shape `aml_compliance`'s own caught bug has (a task_type/
+  task_bindings mismatch there; a sensitivity-ceiling mismatch here), silently
+  always-denying rather than erroring. Fixed by raising each role's `max_sensitivity`
+  to match its own highest-rated real source. If you add or rewire a tool here, check
+  the `sensitivity_level` you're passing against that role's own `max_sensitivity` in
+  `revenue_cycle.yaml` — a mismatch fails the same way and won't surface unless you
+  check the live audit trail.
+- `decision_node` is rule-based, grounded in the real underlying signal data
+  (`hospital_revenue_cycle_data.EXPECTED_OUTCOMES`) — not any role's self-reported
+  finding — same principle as every other demo's decision node. `proposed_action` is
+  one of a small **fixed** set of labels (same convention as
+  `aml_compliance_demo.py`'s `OVERRIDE_ACTIONS`) — the dollar amount and required
+  action are carried as separate structured fields on the interrupt/disposition
+  payload (`revenue_recovery`/`action_required`), not baked into the label string,
+  so the frontend's override dropdown can exact-match against a small enum.
+- Two attack-surface tools on `revenue_summary_tools()` mirror
+  `sar_generator_tools()`/`splunk_threat_synthesizer_tools()`'s exactly:
+  `get_case_agent_outputs` (session isolation — reaches `agent_outputs` through
+  `billing_compliance_agent`'s session instead of its own) and
+  `get_subject_billing_status` (role spoofing — `revenue_orchestrator`'s real
+  `agent_id` claiming `agent_role="billing_compliance_agent"` to reach
+  `billing_records`). Both verified directly during development, same as the other
+  demos' equivalents — see DESIGN.md §8.
+- No hosted AutoPIL SaaS trial mode, unlike the other 5 demos — out of scope for this
+  round, see DESIGN.md §7.
+- **Has its own standalone `examples/hospital_revenue_cycle/frontend/`** — same
+  Vite + React + TypeScript structure as `splunk_secops/frontend/`, minus the
+  MCP/audit-source-choice second interrupt (this demo has only the one disposition
+  interrupt, same as `fraud_investigation`/`aml_compliance`). Also copied into the
+  shared multi-demo `frontend/src/demos/hospital_revenue_cycle/` (see the module
+  immediately above this one for what "keep in sync by hand" means if either one
+  changes later).
+- The audit database `examples/hospital_revenue_cycle/hospital_revenue_cycle_audit.db`
+  is disposable — safe to delete between runs.

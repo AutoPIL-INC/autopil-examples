@@ -1,0 +1,304 @@
+# Hospital Revenue Cycle — AutoPIL policy for the hospital_revenue_cycle demo.
+# Governs which of the 6 revenue-cycle agent roles may read which data source, under
+# which task purpose. Adapted from the core AutoPIL SDK repo's
+# policies/healthcare/revenue_cycle.yaml — see DESIGN.md's "Adapting from the original
+# scripted demo" section for what changed (this file only carries the 6 policies this
+# demo's roles actually use; the original also had 4 unrelated prior-auth/claims/
+# denial/patient-billing policies mixed into the same file that this demo doesn't need).
+industry: healthcare
+organization: Revenue_Cycle_Management
+division: Revenue Cycle Management
+process_group: hospital_revenue_cycle
+
+regulations:
+  - id: HIPAA-PRIVACY
+    name: "HIPAA Privacy Rule — Minimum Necessary Standard (45 CFR 164.502(b))"
+    applicable_rules:
+      - rule: "Each role may access only the PHI minimally necessary for its function"
+        how_enforced: "clinical_documentation_agent_policy is the only role authorized for raw clinical sources (ehr_summaries, clinical_notes, vital_signs, lab_results); every downstream role (charge_reconciliation_agent, billing_compliance_agent, revenue_orchestrator) reads only agent_outputs — compiled, coded findings, never raw PHI"
+      - rule: "Role isolation — coding/billing segregated from raw clinical review"
+        how_enforced: "charge_reconciliation_agent_policy and billing_compliance_agent_policy both deny ehr_summaries/clinical_notes/vital_signs/lab_results outright — enforced by policy engine at retrieval time, not by convention"
+  - id: HIPAA-SECURITY
+    name: "HIPAA Security Rule — Access Control & Audit Controls (45 CFR 164.312)"
+    applicable_rules:
+      - rule: "Unique user/role identification and audit trail of PHI access"
+        how_enforced: "cryptographic audit chain on every ALLOW/DENY event across all 6 roles, same as every other demo in this repo"
+      - rule: "Automatic logoff / time-limited access for high-sensitivity sessions"
+        how_enforced: "clinical_documentation_agent_policy's session_ttl_minutes (60) plus a sensitivity_decay schedule narrows its own ceiling as the session ages, since it's the only role touching raw PHI"
+  - id: CMS-CODING-COMPLIANCE
+    name: "CMS Coding & Billing Compliance — Correct Coding Initiative"
+    applicable_rules:
+      - rule: "Coding decisions must be traceable to supporting clinical documentation"
+        how_enforced: "cdi_specialist_agent_policy and medical_coding_agent_policy both bind their coding tasks (coding_validation/code_assignment/icd10_lookup/cpt_lookup) to diagnosis_codes/procedure_codes/coding_guidelines via task_bindings — never to raw clinical notes directly"
+      - rule: "Charge capture must reconcile documented services against the charge master before claim submission"
+        how_enforced: "charge_reconciliation_agent_policy's task_bindings restrict charge_matching/missed_charge_detection to charge_master, billing_records, and agent_outputs — no clinical source access, so reconciliation is grounded in coded output, not a re-read of the chart"
+
+policies:
+
+  # Revenue orchestrator — routes cases to specialists and does the final revenue
+  # aggregation; no direct clinical, coding, or billing source access of its own.
+  - name: revenue_orchestrator_policy
+    policy_id: revenue-orchestrator-policy-001
+    description: "Routes revenue-cycle cases to specialist agents and aggregates the final revenue summary; orchestration only, no raw source access"
+    agent_role: revenue_orchestrator
+    allowed_sources:
+      - case_metadata
+      - agent_outputs
+    denied_sources:
+      - ehr_summaries
+      - clinical_notes
+      - vital_signs
+      - lab_results
+      - diagnosis_codes
+      - procedure_codes
+      - coding_guidelines
+      - charge_master
+      - billing_records
+      - insurance_eligibility
+    allowed_tasks:
+      - workflow_coordination
+      - agent_routing
+      - output_aggregation
+      - revenue_summary
+    denied_tasks:
+      - documentation_extraction
+      - coding_validation
+      - charge_matching
+      - claim_validation
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: workflow_coordination
+        permitted_sources: [case_metadata]
+      - task: agent_routing
+        permitted_sources: [case_metadata, agent_outputs]
+      - task: output_aggregation
+        permitted_sources: [agent_outputs]
+      - task: revenue_summary
+        permitted_sources: [agent_outputs]
+    session_ttl_minutes: 480
+
+  # Clinical documentation agent — the only role with raw clinical/PHI access. Reads
+  # EHR and clinical notes; produces coded findings for every downstream role to
+  # consume via agent_outputs instead of re-reading the chart themselves.
+  # permitted_agent_ids: locks this role to an approved, named service agent — mirrors
+  # transaction_analyst_policy in fraud_investigation.yaml / security_auditor_policy in
+  # soc_mainframe_logs.yaml.
+  - name: clinical_documentation_agent_policy
+    policy_id: clinical-documentation-agent-policy-001
+    description: "Reads EHR summaries and clinical notes; extracts coded findings for downstream agents; no coding, charge, or billing source access"
+    agent_role: clinical_documentation_agent
+    permitted_agent_ids:
+      - hrc-clinical-doc-prod    # exact match — production clinical-review identity
+      - hrc-clinical-doc-*       # wildcard — matches -canary, -v2, etc.
+    allowed_sources:
+      - ehr_summaries
+      - clinical_notes
+      - vital_signs
+      - lab_results
+    denied_sources:
+      - case_metadata
+      - diagnosis_codes
+      - procedure_codes
+      - coding_guidelines
+      - charge_master
+      - billing_records
+      - insurance_eligibility
+      - agent_outputs
+    allowed_tasks:
+      - clinical_review
+      - documentation_extraction
+      - coded_output_generation
+      - note_summarization
+    denied_tasks:
+      - charge_matching
+      - claim_validation
+      - code_assignment
+      - workflow_coordination
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: clinical_review
+        permitted_sources: [ehr_summaries, clinical_notes]
+      - task: documentation_extraction
+        permitted_sources: [ehr_summaries, clinical_notes, vital_signs, lab_results]
+      - task: coded_output_generation
+        permitted_sources: [ehr_summaries, clinical_notes]
+      - task: note_summarization
+        permitted_sources: [clinical_notes, vital_signs, lab_results]
+    session_ttl_minutes: 60
+    sensitivity_decay:
+      - after_minutes: 30
+        max_sensitivity: high
+
+  # CDI specialist — reviews documentation gaps and undercoding; clinical notes plus
+  # coded reference material only, no billing or raw charge access.
+  - name: cdi_specialist_agent_policy
+    policy_id: cdi-specialist-agent-policy-001
+    description: "Reviews clinical documentation for coding gaps and undercoding; no billing or charge source access"
+    agent_role: cdi_specialist_agent
+    allowed_sources:
+      - clinical_notes
+      - diagnosis_codes
+      - coding_guidelines
+    denied_sources:
+      - case_metadata
+      - ehr_summaries
+      - vital_signs
+      - lab_results
+      - procedure_codes
+      - charge_master
+      - billing_records
+      - insurance_eligibility
+      - agent_outputs
+    allowed_tasks:
+      - documentation_gap_review
+      - coding_validation
+      - cdi_query_generation
+      - audit_flag
+    denied_tasks:
+      - charge_matching
+      - claim_validation
+      - workflow_coordination
+      - code_assignment
+    max_sensitivity: critical
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: documentation_gap_review
+        permitted_sources: [clinical_notes, diagnosis_codes]
+      - task: coding_validation
+        permitted_sources: [diagnosis_codes, coding_guidelines]
+      - task: cdi_query_generation
+        permitted_sources: [clinical_notes, diagnosis_codes]
+      - task: audit_flag
+        permitted_sources: [diagnosis_codes]
+    session_ttl_minutes: 480
+
+  # Medical coding agent — assigns ICD-10/CPT codes from coded reference data only;
+  # never touches raw clinical notes or EHR directly.
+  - name: medical_coding_agent_policy
+    policy_id: medical-coding-agent-policy-001
+    description: "Assigns ICD-10 and CPT codes from procedure/diagnosis codes and coding guidelines; no raw clinical or billing source access"
+    agent_role: medical_coding_agent
+    allowed_sources:
+      - procedure_codes
+      - diagnosis_codes
+      - coding_guidelines
+    denied_sources:
+      - case_metadata
+      - ehr_summaries
+      - clinical_notes
+      - vital_signs
+      - lab_results
+      - charge_master
+      - billing_records
+      - insurance_eligibility
+      - agent_outputs
+    allowed_tasks:
+      - code_assignment
+      - coding_review
+      - icd10_lookup
+      - cpt_lookup
+    denied_tasks:
+      - clinical_review
+      - charge_matching
+      - claim_validation
+      - workflow_coordination
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: code_assignment
+        permitted_sources: [procedure_codes, diagnosis_codes]
+      - task: coding_review
+        permitted_sources: [procedure_codes, diagnosis_codes, coding_guidelines]
+      - task: icd10_lookup
+        permitted_sources: [diagnosis_codes, coding_guidelines]
+      - task: cpt_lookup
+        permitted_sources: [procedure_codes, coding_guidelines]
+    session_ttl_minutes: 480
+
+  # Charge reconciliation agent — matches documented services to the charge master
+  # and billing record; no raw clinical or coding-reference access of its own.
+  - name: charge_reconciliation_agent_policy
+    policy_id: charge-reconciliation-agent-policy-001
+    description: "Matches rendered services to billed charges via charge master and billing records; no clinical or coding-reference source access"
+    agent_role: charge_reconciliation_agent
+    allowed_sources:
+      - charge_master
+      - billing_records
+      - agent_outputs
+    denied_sources:
+      - case_metadata
+      - ehr_summaries
+      - clinical_notes
+      - vital_signs
+      - lab_results
+      - diagnosis_codes
+      - procedure_codes
+      - coding_guidelines
+      - insurance_eligibility
+    allowed_tasks:
+      - charge_matching
+      - missed_charge_detection
+      - revenue_gap_analysis
+      - audit_flag
+    denied_tasks:
+      - clinical_review
+      - documentation_extraction
+      - code_assignment
+      - claim_validation
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: charge_matching
+        permitted_sources: [charge_master, billing_records]
+      - task: missed_charge_detection
+        permitted_sources: [charge_master, billing_records, agent_outputs]
+      - task: revenue_gap_analysis
+        permitted_sources: [charge_master, billing_records, agent_outputs]
+      - task: audit_flag
+        permitted_sources: [charge_master]
+    session_ttl_minutes: 480
+
+  # Billing compliance agent — final claim validation against payer rules; billing
+  # and eligibility data plus compiled outputs, no clinical or raw charge access.
+  - name: billing_compliance_agent_policy
+    policy_id: billing-compliance-agent-policy-001
+    description: "Validates final claims against payer rules and eligibility; no clinical or charge-master source access"
+    agent_role: billing_compliance_agent
+    allowed_sources:
+      - billing_records
+      - insurance_eligibility
+      - agent_outputs
+    denied_sources:
+      - case_metadata
+      - ehr_summaries
+      - clinical_notes
+      - vital_signs
+      - lab_results
+      - diagnosis_codes
+      - procedure_codes
+      - coding_guidelines
+      - charge_master
+    allowed_tasks:
+      - claim_validation
+      - payer_rule_check
+      - compliance_review
+      - audit_flag
+    denied_tasks:
+      - clinical_review
+      - documentation_extraction
+      - charge_matching
+      - code_assignment
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: claim_validation
+        permitted_sources: [billing_records, insurance_eligibility]
+      - task: payer_rule_check
+        permitted_sources: [insurance_eligibility]
+      - task: compliance_review
+        permitted_sources: [billing_records, agent_outputs]
+      - task: audit_flag
+        permitted_sources: [billing_records]
+    session_ttl_minutes: 480
