@@ -7,16 +7,17 @@ demo's own standalone frontend (`examples/fraud_investigation/frontend/`,
 README, unchanged. Use whichever is more convenient: one demo in isolation, or all of
 them from one server here.
 
-All 5 demos already run on the same `langgraph dev` process (`http://localhost:2024`,
+All 6 demos already run on the same `langgraph dev` process (`http://localhost:2024`,
 `langgraph.json` exposes `fraud_investigation`, `client_analysis`,
-`institutional_portfolio_review`, `aml_compliance`, and `splunk_secops`) — this app just
-switches which `assistantId` it streams from based on which demo tab is selected. No
-backend changes needed.
+`institutional_portfolio_review`, `aml_compliance`, `splunk_secops`, and
+`hospital_revenue_cycle`) — this app just switches which `assistantId` it streams from
+based on which demo is selected. No backend changes needed.
 
 ## Structure
 
-- `src/App.tsx` — the demo switcher: a top-level nav (Fraud Investigation / Client
-  Analysis), then the same Description/Execution sub-tabs each standalone app has.
+- `src/App.tsx` — the demo switcher: a left-hand sidebar (`.sidebar`/`.sidebar-item`,
+  scales by growing down rather than a horizontal row that would crowd past a handful
+  of demos), then the same Description/Execution sub-tabs each standalone app has.
 - `src/demos/fraud/` — copied from `examples/fraud_investigation/frontend/src`
   (`types.ts`, `policyData.ts`, `DescriptionTab.tsx`, `ExecutionTab.tsx`).
 - `src/demos/client_analysis/` — same, copied from
@@ -25,6 +26,11 @@ backend changes needed.
   pattern, copied from their own `examples/*/frontend/src`.
 - `src/demos/splunk_secops/` — same, copied from
   `examples/splunk_secops/frontend/src`.
+- `src/demos/hospital_revenue_cycle/` — same, copied from
+  `examples/hospital_revenue_cycle/frontend/src`.
+- `src/industries.ts` — the industry dropdown under the AutoPIL wordmark; each
+  industry's `demos` list is what the sidebar filters down to when it's selected — see
+  that file's own header comment for which verticals are enabled vs. "coming soon".
 - `src/LogoMark.tsx`, `src/index.css`, `src/App.css`, `src/main.tsx` — shared shell,
   identical to what each standalone frontend uses.
 
@@ -44,7 +50,7 @@ npm install
 npm run dev
 ```
 
-Open the printed Vite URL. Pick a demo from the top nav, then Description or Execution
+Open the printed Vite URL. Pick a demo from the sidebar, then Description or Execution
 underneath, same as either standalone app.
 
 ## Keeping this in sync

@@ -10,7 +10,10 @@ import AmlComplianceDescriptionTab from "./demos/aml_compliance/DescriptionTab";
 import AmlComplianceExecutionTab from "./demos/aml_compliance/ExecutionTab";
 import SplunkSecopsDescriptionTab from "./demos/splunk_secops/DescriptionTab";
 import SplunkSecopsExecutionTab from "./demos/splunk_secops/ExecutionTab";
+import HospitalRevenueCycleDescriptionTab from "./demos/hospital_revenue_cycle/DescriptionTab";
+import HospitalRevenueCycleExecutionTab from "./demos/hospital_revenue_cycle/ExecutionTab";
 import { INDUSTRIES } from "./industries";
+import { INDUSTRY_ICONS } from "./industryIcons";
 import "./App.css";
 
 const API_URL = "http://localhost:2024";
@@ -37,7 +40,7 @@ const THEME_KEY = "autopil_demos_theme";
 
 function useTheme() {
   const [theme, setTheme] = useState<"dark" | "light">(
-    () => (localStorage.getItem(THEME_KEY) as "dark" | "light") ?? "dark",
+    () => (localStorage.getItem(THEME_KEY) as "dark" | "light") ?? "light",
   );
 
   useEffect(() => {
@@ -48,7 +51,7 @@ function useTheme() {
   return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))] as const;
 }
 
-type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops";
+type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops" | "hospital_revenue_cycle";
 type Tab = "description" | "execution";
 
 const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution: ComponentType }> = {
@@ -77,6 +80,11 @@ const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution
     Description: SplunkSecopsDescriptionTab,
     Execution: SplunkSecopsExecutionTab,
   },
+  hospital_revenue_cycle: {
+    label: "Hospital Revenue Cycle",
+    Description: HospitalRevenueCycleDescriptionTab,
+    Execution: HospitalRevenueCycleExecutionTab,
+  },
 };
 
 export default function App() {
@@ -84,17 +92,29 @@ export default function App() {
   const [theme, toggleTheme] = useTheme();
   const [demo, setDemo] = useState<Demo>("fraud");
   const [tab, setTab] = useState<Tab>("description");
-  // Industry context only — see industries.ts. Doesn't drive which demo tabs show
-  // below; only "financial_services" has demos behind it today, so it's the only
-  // enabled option. Not persisted: nothing downstream reads it yet.
+  // Drives which demos the sidebar shows — see industries.ts's `demos` field per
+  // industry. Not persisted: nothing outside this component reads it.
   const [industry, setIndustry] = useState<string>("financial_services");
 
   const active = DEMOS[demo];
   const { Description } = active;
 
+  const visibleDemoKeys = (INDUSTRIES.find((i) => i.value === industry)?.demos ?? []) as Demo[];
+
   const selectDemo = (next: Demo) => {
     setDemo(next);
     setTab("description");
+  };
+
+  const selectIndustry = (next: string) => {
+    setIndustry(next);
+    const demosForIndustry = INDUSTRIES.find((i) => i.value === next)?.demos ?? [];
+    // Switch to that industry's first demo if the currently-selected one isn't in it
+    // — otherwise the sidebar would filter down while still showing a demo that's no
+    // longer in the visible list.
+    if (!demosForIndustry.includes(demo) && demosForIndustry.length > 0) {
+      selectDemo(demosForIndustry[0] as Demo);
+    }
   };
 
   return (
@@ -104,18 +124,21 @@ export default function App() {
           <div className="logo-mark"><LogoMark id="autopil-demos" /></div>
           <div>
             <div className="logo-name">Auto<span className="accent">PIL</span></div>
-            <select
-              className="industry-select"
-              value={industry}
-              onChange={(e) => setIndustry(e.target.value)}
-              title="Industry (context only — doesn't change which demo tabs show below)"
-            >
-              {INDUSTRIES.map((ind) => (
-                <option key={ind.value} value={ind.value} disabled={!ind.enabled}>
-                  {ind.label} — {ind.company} Demo{!ind.enabled ? " (coming soon)" : ""}
-                </option>
-              ))}
-            </select>
+            <div className="industry-row">
+              <span className="industry-icon">{INDUSTRY_ICONS[industry]}</span>
+              <select
+                className="industry-select"
+                value={industry}
+                onChange={(e) => selectIndustry(e.target.value)}
+                title="Industry — filters which use cases show in the sidebar"
+              >
+                {INDUSTRIES.map((ind) => (
+                  <option key={ind.value} value={ind.value} disabled={!ind.enabled}>
+                    {ind.label} — {ind.company} Demo{!ind.enabled ? " (coming soon)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
         <div className="header-right">
@@ -133,7 +156,7 @@ export default function App() {
       <div className="body-layout">
         <aside className="sidebar">
           <div className="sidebar-title">Use Cases</div>
-          {(Object.keys(DEMOS) as Demo[]).map((key) => (
+          {visibleDemoKeys.map((key) => (
             <button
               key={key}
               className={`sidebar-item ${demo === key ? "active" : ""}`}
