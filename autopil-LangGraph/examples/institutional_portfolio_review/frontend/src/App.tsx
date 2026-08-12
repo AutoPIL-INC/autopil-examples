@@ -28,7 +28,7 @@ const THEME_KEY = "autopil_portfolio_review_demo_theme";
 
 function useTheme() {
   const [theme, setTheme] = useState<"dark" | "light">(
-    () => (localStorage.getItem(THEME_KEY) as "dark" | "light") ?? "dark",
+    () => (localStorage.getItem(THEME_KEY) as "dark" | "light") ?? "light",
   );
 
   useEffect(() => {

@@ -28,7 +28,7 @@ const THEME_KEY = "autopil_client_analysis_demo_theme";
 
 function useTheme() {
   const [theme, setTheme] = useState<"dark" | "light">(
-    () => (localStorage.getItem(THEME_KEY) as "dark" | "light") ?? "dark",
+    () => (localStorage.getItem(THEME_KEY) as "dark" | "light") ?? "light",
   );
 
   useEffect(() => {
