@@ -1,0 +1,272 @@
+# Care Coordination — AutoPIL policy for the care_coordination demo.
+# Governs which of the 5 care-team agent roles may read which data source, under which
+# task purpose. Adapted from the core AutoPIL SDK repo's
+# policies/healthcare/clinical_operations.yaml — see DESIGN.md's "Adapting from the
+# original policy file" section for what changed (that file has no orchestrator role
+# and no task_bindings/require_task_for_sensitivity at all; both are added here,
+# consistently, matching every other demo in this repo).
+industry: healthcare
+organization: Care_Coordination
+division: Care Coordination
+process_group: care_coordination
+
+regulations:
+  - id: HIPAA-PRIVACY
+    name: "HIPAA Privacy Rule — Minimum Necessary Standard (45 CFR 164.502(b))"
+    applicable_rules:
+      - rule: "Each role may access only the PHI minimally necessary for its function"
+        how_enforced: "clinical_summary_agent_policy is the only role authorized for the full chart (ehr_summaries, lab_results); medication_review_agent, care_gap_agent, and care_coordinator each read only their own lane — enforced by policy engine at retrieval time, not by convention"
+      - rule: "Role isolation — clinical review segregated from medication management"
+        how_enforced: "clinical_summary_agent_policy denies medication_history/allergy_records outright; medication_review_agent_policy denies ehr_summaries/lab_results outright — neither role can substitute for the other's job"
+  - id: HIPAA-SECURITY
+    name: "HIPAA Security Rule — Access Control & Audit Controls (45 CFR 164.312)"
+    applicable_rules:
+      - rule: "Unique user/role identification and audit trail of PHI access"
+        how_enforced: "cryptographic audit chain on every ALLOW/DENY event across all 5 roles, same as every other demo in this repo"
+      - rule: "Automatic logoff / time-limited access for high-sensitivity sessions"
+        how_enforced: "clinical_summary_agent_policy and medication_review_agent_policy both narrow their own ceiling as the session ages (sensitivity_decay) — the two roles with the deepest PHI access"
+  - id: CMS-CARE-COORDINATION
+    name: "CMS Care Coordination & Chronic Care Management Requirements"
+    applicable_rules:
+      - rule: "Chronic-condition follow-up must be tracked against a documented care plan and outreach initiated when overdue"
+        how_enforced: "care_gap_agent_policy's task_bindings restrict gap_identification/outreach_initiation to chronic_condition_registry, preventive_care_schedule, and care_plans — never to raw clinical notes or medication history"
+      - rule: "Medication reconciliation must check for interactions before a refill or new prescription is authorized"
+        how_enforced: "medication_review_agent_policy's interaction_check task is bound to medication_history and drug_interaction_db specifically — a refill decision can't skip the interaction check by construction"
+
+policies:
+
+  # Care coordinator — routes cases to specialists and compiles the final care note;
+  # no direct clinical, medication, or registry source access of its own. No such role
+  # existed in the original policy file (it has no orchestrator at all) — added so
+  # there's a real routing decision to make, same reasoning fraud_investigation's/
+  # splunk_secops's/hospital_revenue_cycle's own orchestrators needed.
+  - name: care_coordinator_policy
+    policy_id: care-coordinator-policy-001
+    description: "Routes care-coordination cases to specialist agents and compiles the final care note; orchestration only, no raw source access"
+    agent_role: care_coordinator
+    allowed_sources:
+      - case_metadata
+      - agent_outputs
+    denied_sources:
+      - symptom_intake
+      - vital_signs
+      - patient_demographics
+      - ehr_summaries
+      - lab_results
+      - care_plans
+      - medication_history
+      - allergy_records
+      - pharmacy_data
+      - drug_interaction_db
+      - chronic_condition_registry
+      - preventive_care_schedule
+    allowed_tasks:
+      - case_intake
+      - care_team_routing
+      - care_summary
+    denied_tasks:
+      - triage_assessment
+      - chart_review
+      - medication_reconciliation
+      - gap_identification
+    # Set to `high` from the start, not `medium` — a role whose only real source
+    # (agent_outputs) is rated high needs a ceiling that covers it. Caught the inverse
+    # of this exact mistake in hospital_revenue_cycle_demo.py's own orchestrator/final
+    # roles during verification there; not repeating it here.
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: case_intake
+        permitted_sources: [case_metadata]
+      - task: care_team_routing
+        permitted_sources: [case_metadata, agent_outputs]
+      - task: care_summary
+        permitted_sources: [agent_outputs]
+    session_ttl_minutes: 480
+
+  # Triage agent — symptom intake and vitals only; no chart, no medications, no
+  # registry access. Narrowest specialist in this demo.
+  - name: triage_agent_policy
+    policy_id: triage-agent-policy-001
+    description: "Symptom intake and vital signs only; no chart, medication, or registry source access"
+    agent_role: triage_agent
+    allowed_sources:
+      - symptom_intake
+      - vital_signs
+      - patient_demographics
+    denied_sources:
+      - case_metadata
+      - ehr_summaries
+      - lab_results
+      - care_plans
+      - medication_history
+      - allergy_records
+      - pharmacy_data
+      - drug_interaction_db
+      - chronic_condition_registry
+      - preventive_care_schedule
+      - agent_outputs
+    allowed_tasks:
+      - triage_assessment
+      - escalation_flag
+      - appointment_scheduling
+    denied_tasks:
+      - chart_review
+      - medication_reconciliation
+      - gap_identification
+      - care_summary
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: triage_assessment
+        permitted_sources: [symptom_intake, vital_signs]
+      - task: escalation_flag
+        permitted_sources: [vital_signs, symptom_intake]
+      - task: appointment_scheduling
+        permitted_sources: [patient_demographics]
+    session_ttl_minutes: 480
+
+  # Clinical summary agent — the only role with full-chart access (EHR summaries, lab
+  # results). Ceiling decays as the session ages, same mechanism as
+  # clinical_documentation_agent_policy in hospital_revenue_cycle.yaml, just a lighter
+  # starting ceiling (high, not critical) — this is a chart-review glance for care
+  # coordination, not the deep clinical-documentation extraction that demo's role does.
+  - name: clinical_summary_agent_policy
+    policy_id: clinical-summary-agent-policy-001
+    description: "EHR summaries, lab results, and care plans for chart review and care coordination; no medication, registry, or billing source access"
+    agent_role: clinical_summary_agent
+    allowed_sources:
+      - ehr_summaries
+      - lab_results
+      - vital_signs
+      - care_plans
+    denied_sources:
+      - case_metadata
+      - symptom_intake
+      - patient_demographics
+      - medication_history
+      - allergy_records
+      - pharmacy_data
+      - drug_interaction_db
+      - chronic_condition_registry
+      - preventive_care_schedule
+      - agent_outputs
+    allowed_tasks:
+      - chart_review
+      - care_coordination
+      - referral_initiation
+    denied_tasks:
+      - triage_assessment
+      - medication_reconciliation
+      - gap_identification
+      - care_summary
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: chart_review
+        permitted_sources: [ehr_summaries, lab_results, vital_signs]
+      - task: care_coordination
+        permitted_sources: [ehr_summaries, care_plans, lab_results]
+      - task: referral_initiation
+        permitted_sources: [ehr_summaries, care_plans]
+    session_ttl_minutes: 240
+    sensitivity_decay:
+      - after_minutes: 60
+        max_sensitivity: medium
+      - after_minutes: 120
+        max_sensitivity: low
+
+  # Medication review agent — medication history, allergies, pharmacy fill data, and
+  # the drug-interaction reference table; no chart, no registry access.
+  # permitted_agent_ids: locks this role to an approved, named clinical-agent identity
+  # — the original policy file's own comment calls for this ("sensitive PHI access —
+  # locked to approved clinical agents only").
+  - name: medication_review_agent_policy
+    policy_id: medication-review-agent-policy-001
+    description: "Medication history, allergy records, and pharmacy data for reconciliation and interaction checks; no chart or registry source access"
+    agent_role: medication_review_agent
+    permitted_agent_ids:
+      - cc-med-review-prod    # exact match — production clinical-agent identity
+      - cc-med-review-*       # wildcard — matches -canary, -v2, etc.
+    allowed_sources:
+      - medication_history
+      - allergy_records
+      - pharmacy_data
+      - drug_interaction_db
+    denied_sources:
+      - case_metadata
+      - symptom_intake
+      - vital_signs
+      - patient_demographics
+      - ehr_summaries
+      - lab_results
+      - care_plans
+      - chronic_condition_registry
+      - preventive_care_schedule
+      - agent_outputs
+    allowed_tasks:
+      - medication_reconciliation
+      - interaction_check
+      - refill_authorization
+    denied_tasks:
+      - chart_review
+      - triage_assessment
+      - gap_identification
+      - care_summary
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: medication_reconciliation
+        permitted_sources: [medication_history, allergy_records, pharmacy_data]
+      - task: interaction_check
+        permitted_sources: [medication_history, drug_interaction_db]
+      - task: refill_authorization
+        permitted_sources: [medication_history, pharmacy_data]
+    session_ttl_minutes: 240
+    sensitivity_decay:
+      - after_minutes: 60
+        max_sensitivity: medium
+      - after_minutes: 120
+        max_sensitivity: low
+
+  # Care gap agent — chronic-condition registry and preventive-care schedule only;
+  # population/outreach angle, lowest ceiling of the four specialists.
+  - name: care_gap_agent_policy
+    policy_id: care-gap-agent-policy-001
+    description: "Chronic-condition registry and preventive-care schedule for gap identification and outreach; no chart or medication source access"
+    agent_role: care_gap_agent
+    allowed_sources:
+      - chronic_condition_registry
+      - preventive_care_schedule
+      - patient_demographics
+      - care_plans
+    denied_sources:
+      - case_metadata
+      - symptom_intake
+      - vital_signs
+      - ehr_summaries
+      - lab_results
+      - medication_history
+      - allergy_records
+      - pharmacy_data
+      - drug_interaction_db
+      - agent_outputs
+    allowed_tasks:
+      - gap_identification
+      - outreach_initiation
+      - care_plan_update
+    denied_tasks:
+      - chart_review
+      - triage_assessment
+      - medication_reconciliation
+      - care_summary
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: gap_identification
+        permitted_sources: [chronic_condition_registry, preventive_care_schedule]
+      - task: outreach_initiation
+        permitted_sources: [preventive_care_schedule, patient_demographics]
+      - task: care_plan_update
+        permitted_sources: [care_plans, chronic_condition_registry]
+    session_ttl_minutes: 480
