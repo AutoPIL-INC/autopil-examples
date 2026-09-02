@@ -63,7 +63,19 @@ as a whole.
   before being added (see the module-name-collision note below). See its
   [DESIGN.md](./examples/hospital_revenue_cycle/DESIGN.md) and
   [README.md](./examples/hospital_revenue_cycle/README.md).
-- `frontend/` — a seventh, **additive** frontend covering every demo from one
+- `examples/care_coordination/` — 5 roles (`care_coordinator`, `triage_agent`,
+  `clinical_summary_agent`, `medication_review_agent`, `care_gap_agent`) governing
+  point-of-care patient data (triage, chart review, medication management, chronic-care
+  outreach) — the second Healthcare demo, covering the front-of-house half of that
+  vertical's AI governance surface where `hospital_revenue_cycle` covers the back
+  office. Adapted from the core AutoPIL SDK repo's `policies/healthcare/
+  clinical_operations.yaml` — a policy file with no orchestrator role and no
+  `task_bindings` anywhere in it — see its DESIGN.md §2 for exactly what changed and
+  why. Its own module is `care_coordination_data.py`, checked against every existing
+  demo's module names before being added. See its
+  [DESIGN.md](./examples/care_coordination/DESIGN.md) and
+  [README.md](./examples/care_coordination/README.md).
+- `frontend/` — an eighth, **additive** frontend covering every demo from one
   `langgraph dev` server, so you don't need two `npm run dev` processes. Each demo's
   own standalone frontend (`examples/*/frontend/`) is untouched and still works
   independently — see [frontend/README.md](./frontend/README.md). The demo-specific
@@ -406,3 +418,55 @@ as a whole.
   changes later).
 - The audit database `examples/hospital_revenue_cycle/hospital_revenue_cycle_audit.db`
   is disposable — safe to delete between runs.
+
+## Working with the care_coordination demo
+
+- Follows `fraud_investigation`/`hospital_revenue_cycle`'s exact architecture
+  (LLM-driven `care_coordinator` routing, `orchestrator_review_node` re-routing loop,
+  rule-based `decision_node` + human `interrupt()`) — moved into a point-of-care
+  healthcare domain instead of financial services or revenue-cycle billing. See its
+  DESIGN.md §2 for the full "adapted from a policy file with no orchestrator and no
+  task_bindings at all" rationale.
+- **No fixed final specialist, unlike every other orchestrated demo in this repo.**
+  `fraud_investigation`/`splunk_secops`/`hospital_revenue_cycle` all have one role that
+  always runs last before the synthesizer step (`sar_generator`,
+  `splunk_threat_synthesizer`, `billing_compliance_agent`). None of this demo's 4
+  specialists is naturally "always last" — which one matters depends on the case (an
+  acute call needs `clinical_summary_agent` last to confirm history; a refill needs
+  `medication_review_agent` last) — so `care_coordinator` routes among all 4 via the
+  same re-routing loop, then compiles the summary itself. One fewer graph node than
+  `hospital_revenue_cycle`, not a missing piece.
+- **A real bug caught during verification**: `clinical_summary_tools()`'s
+  `get_vital_signs` call was bound to `task_type="care_coordination"`, but that task's
+  `task_bindings.permitted_sources` in `clinical_operations.yaml` only lists
+  `[ehr_summaries, care_plans, lab_results]` — `vital_signs` isn't in it, even though
+  it's genuinely in `clinical_summary_agent_policy.allowed_sources`. The call was
+  denied on every run regardless of model behavior, same failure shape
+  `aml_compliance`'s own caught bug has (a task_type/task_bindings mismatch there and
+  here). Fixed by rebinding the call to `task_type="chart_review"`, whose
+  `task_bindings` already include `vital_signs`. If you add or rewire a tool here,
+  cross-check its `(source, task_type)` pair against that task's
+  `task_bindings.permitted_sources` directly — don't assume a source being in
+  `allowed_sources` means every task binding covers it.
+- `decision_node` is rule-based, grounded in real underlying signal data (actual
+  vitals + cardiac history, registry overdue-days) — not any role's self-reported
+  finding — same principle as every other demo's decision node. `proposed_action` is
+  one of 4 small **fixed** labels, same convention as `hospital_revenue_cycle_demo.py`'s
+  own fix for this (see that section above) — no dynamic strings baked in.
+- Two attack-surface tools on `care_summary_tools()` mirror
+  `sar_generator_tools()`/`revenue_summary_tools()`'s exactly: `get_case_agent_outputs`
+  (session isolation — reaches `agent_outputs` through `clinical_summary_agent`'s
+  session instead of its own) and `get_subject_medication_status` (role spoofing —
+  `care_coordinator`'s real `agent_id` claiming `agent_role="medication_review_agent"`
+  to reach `medication_history`). Both verified directly during development, same as
+  the other demos' equivalents — see DESIGN.md §8.
+- No hosted AutoPIL SaaS trial mode, unlike the 5 demos that have it — out of scope for
+  this round, see DESIGN.md §7.
+- **Has its own standalone `examples/care_coordination/frontend/`** — same Vite +
+  React + TypeScript structure as `hospital_revenue_cycle/frontend/` (single
+  disposition interrupt, no MCP/audit-source-choice second pause). Also copied into
+  the shared multi-demo `frontend/src/demos/care_coordination/` (see the module
+  immediately above this one for what "keep in sync by hand" means if either one
+  changes later).
+- The audit database `examples/care_coordination/care_coordination_audit.db` is
+  disposable — safe to delete between runs.

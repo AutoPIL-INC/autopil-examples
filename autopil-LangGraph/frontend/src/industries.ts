@@ -21,7 +21,7 @@ export const INDUSTRIES: Industry[] = [
   },
   {
     value: "healthcare", label: "Healthcare", company: "Alden Health Partners", enabled: true,
-    demos: ["hospital_revenue_cycle"],
+    demos: ["hospital_revenue_cycle", "care_coordination"],
   },
   { value: "telecom", label: "Telecom", company: "Northbridge Telecom", enabled: false, demos: [] },
   { value: "logistics", label: "Logistics", company: "Vantage Freight Systems", enabled: false, demos: [] },

@@ -7,11 +7,12 @@ demo's own standalone frontend (`examples/fraud_investigation/frontend/`,
 README, unchanged. Use whichever is more convenient: one demo in isolation, or all of
 them from one server here.
 
-All 6 demos already run on the same `langgraph dev` process (`http://localhost:2024`,
+All 7 demos already run on the same `langgraph dev` process (`http://localhost:2024`,
 `langgraph.json` exposes `fraud_investigation`, `client_analysis`,
-`institutional_portfolio_review`, `aml_compliance`, `splunk_secops`, and
-`hospital_revenue_cycle`) — this app just switches which `assistantId` it streams from
-based on which demo is selected. No backend changes needed.
+`institutional_portfolio_review`, `aml_compliance`, `splunk_secops`,
+`hospital_revenue_cycle`, and `care_coordination`) — this app just switches which
+`assistantId` it streams from based on which demo is selected. No backend changes
+needed.
 
 ## Structure
 
@@ -28,6 +29,8 @@ based on which demo is selected. No backend changes needed.
   `examples/splunk_secops/frontend/src`.
 - `src/demos/hospital_revenue_cycle/` — same, copied from
   `examples/hospital_revenue_cycle/frontend/src`.
+- `src/demos/care_coordination/` — same, copied from
+  `examples/care_coordination/frontend/src`.
 - `src/industries.ts` — the industry dropdown under the AutoPIL wordmark; each
   industry's `demos` list is what the sidebar filters down to when it's selected — see
   that file's own header comment for which verticals are enabled vs. "coming soon".
