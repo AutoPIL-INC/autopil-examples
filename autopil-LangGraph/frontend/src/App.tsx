@@ -12,6 +12,8 @@ import SplunkSecopsDescriptionTab from "./demos/splunk_secops/DescriptionTab";
 import SplunkSecopsExecutionTab from "./demos/splunk_secops/ExecutionTab";
 import HospitalRevenueCycleDescriptionTab from "./demos/hospital_revenue_cycle/DescriptionTab";
 import HospitalRevenueCycleExecutionTab from "./demos/hospital_revenue_cycle/ExecutionTab";
+import CareCoordinationDescriptionTab from "./demos/care_coordination/DescriptionTab";
+import CareCoordinationExecutionTab from "./demos/care_coordination/ExecutionTab";
 import QualityControlDescriptionTab from "./demos/quality_control/DescriptionTab";
 import QualityControlExecutionTab from "./demos/quality_control/ExecutionTab";
 import { INDUSTRIES } from "./industries";
@@ -53,7 +55,7 @@ function useTheme() {
   return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))] as const;
 }
 
-type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops" | "hospital_revenue_cycle" | "quality_control";
+type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops" | "hospital_revenue_cycle" | "care_coordination" | "quality_control";
 type Tab = "description" | "execution";
 
 const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution: ComponentType }> = {
@@ -86,6 +88,11 @@ const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution
     label: "Hospital Revenue Cycle",
     Description: HospitalRevenueCycleDescriptionTab,
     Execution: HospitalRevenueCycleExecutionTab,
+  },
+  care_coordination: {
+    label: "Care Coordination",
+    Description: CareCoordinationDescriptionTab,
+    Execution: CareCoordinationExecutionTab,
   },
   quality_control: {
     label: "Quality Control",
