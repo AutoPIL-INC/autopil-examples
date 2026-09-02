@@ -1,0 +1,254 @@
+# Quality Control — AutoPIL policy for the quality_control demo.
+# Governs which of the 5 quality-team agent roles may read which data source, under
+# which task purpose, at Ironview Manufacturing (an automotive stamping/injection-
+# molding supplier). Adapted from the sibling `autopil` repo's
+# policies/manufacturing/quality_control.yaml — 4 flat specialist policies with **no
+# orchestrator role at all** and **no task_bindings anywhere in the file** — see
+# DESIGN.md's "Adapting from the incomplete policy stub" section for exactly what
+# changed and why. The 4 original roles' allowed_sources/denied_sources/allowed_tasks/
+# denied_tasks/max_sensitivity are carried over as-is; only task_bindings (and a
+# handful of denied_sources entries needed for this demo's over-scope scenarios) were
+# added, plus the 5th quality_orchestrator role.
+industry: manufacturing
+organization: Ironview_Manufacturing
+division: Quality Assurance
+process_group: quality_control
+
+regulations:
+  - id: IATF-16949-CORRECTIVE-ACTION
+    name: "IATF 16949 Clause 10.2 — Nonconformity and Corrective Action"
+    applicable_rules:
+      - rule: "Root cause analysis must trace a nonconformance to its source (internal process drift, equipment calibration, or supplier material) before a corrective action is authorized"
+        how_enforced: "quality_orchestrator routes the case across defect_detection_agent, spc_agent, calibration_agent, and supplier_quality_agent as needed until decision_node confirms a root cause against real fixture data (calibration due-dates, nonconformance flags, control-chart/lot-changeover correlation) — never a role's self-reported finding"
+      - rule: "Each function in the corrective-action chain accesses only the process data relevant to its own investigative role"
+        how_enforced: "spc_agent_policy/supplier_quality_agent_policy/calibration_agent_policy each deny the other roles' sources outright — enforced by policy engine at retrieval time, not by convention"
+  - id: IATF-16949-SUPPLIER-CONTROL
+    name: "IATF 16949 Clause 8.4 — Control of Externally Provided Processes, Products, and Services"
+    applicable_rules:
+      - rule: "A supplier lot with an open nonconformance must be identifiable and traceable before further material from that lot is released"
+        how_enforced: "supplier_quality_agent_policy's task_bindings restrict nonconformance_reporting/supplier_audit to nonconformance_reports/audit_records/supplier_scorecards — never customer or financial data, and never pricing"
+  - id: ISO-9001-MEASURING-RESOURCES
+    name: "ISO 9001 Clause 7.1.5 — Monitoring and Measuring Resources"
+    applicable_rules:
+      - rule: "Measurement equipment must be calibrated at required intervals, and out-of-tolerance equipment flagged before it's trusted to accept product"
+        how_enforced: "calibration_agent_policy is the only role authorized for calibration_records/equipment_registry; its out_of_tolerance_flagging task is bound specifically to calibration_records and measurement_data"
+
+policies:
+
+  # Quality orchestrator — routes the investigation across specialists and compiles
+  # the final root-cause finding; no direct sensor, process, supplier, or equipment
+  # source access of its own. No such role existed in the original policy stub (it has
+  # no orchestrator at all) — added so there's a real routing decision to make, same
+  # reasoning fraud_investigation's/hospital_revenue_cycle's/care_coordination's own
+  # orchestrators needed. Mirrors care_coordinator_policy's shape exactly.
+  - name: quality_orchestrator_policy
+    policy_id: quality-orchestrator-policy-001
+    description: "Routes quality-investigation cases to specialist agents and compiles the final root-cause finding; orchestration only, no raw source access"
+    agent_role: quality_orchestrator
+    allowed_sources:
+      - case_metadata
+      - agent_outputs
+    denied_sources:
+      - sensor_data
+      - vision_system_outputs
+      - spc_charts
+      - product_specs
+      - inspection_records
+      - measurement_data
+      - process_parameters
+      - calibration_records
+      - supplier_scorecards
+      - nonconformance_reports
+      - audit_records
+      - equipment_registry
+      - maintenance_schedules
+    allowed_tasks:
+      - case_intake
+      - quality_routing
+      - finding_compilation
+    denied_tasks:
+      - defect_detection
+      - control_chart_analysis
+      - supplier_audit
+      - calibration_scheduling
+    # Set to `high` from the start, not `medium` — a role whose only real source
+    # (agent_outputs) is rated high needs a ceiling that covers it. Same value as
+    # care_coordinator_policy in clinical_operations.yaml, for the same reason —
+    # not repeating the inverse mistake caught in hospital_revenue_cycle_demo.py's
+    # own orchestrator/final roles during verification there.
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: case_intake
+        permitted_sources: [case_metadata]
+      - task: quality_routing
+        permitted_sources: [case_metadata, agent_outputs]
+      - task: finding_compilation
+        permitted_sources: [agent_outputs]
+    session_ttl_minutes: 480
+
+  # Defect detection agent — sensor and vision data; blocked from supplier contracts,
+  # cost/financial data, customer data, and HR records. allowed_sources/denied_sources/
+  # allowed_tasks/denied_tasks/max_sensitivity carried over verbatim from the original
+  # stub's defect_detection_agent_policy; task_bindings and a `cost_data` denied-source
+  # entry added for this demo (the stub predates that source existing at all).
+  - name: defect_detection_agent_policy
+    policy_id: defect-detection-agent-policy-001
+    description: "Sensor and vision data for quality inspection; no supplier contracts or financial data access"
+    agent_role: defect_detection_agent
+    allowed_sources:
+      - sensor_data
+      - vision_system_outputs
+      - spc_charts
+      - product_specs
+      - inspection_records
+    denied_sources:
+      - supplier_contracts
+      - financial_ledgers
+      - customer_data
+      - hr_records
+      - cost_data
+    allowed_tasks:
+      - defect_detection
+      - quality_flagging
+      - scrap_reporting
+      - root_cause_initiation
+    denied_tasks:
+      - purchase_order_creation
+      - pricing_decision
+      - customer_communication
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: defect_detection
+        permitted_sources: [sensor_data, vision_system_outputs]
+      - task: quality_flagging
+        permitted_sources: [spc_charts, inspection_records]
+      - task: scrap_reporting
+        permitted_sources: [inspection_records, spc_charts]
+      - task: root_cause_initiation
+        permitted_sources: [product_specs, inspection_records, spc_charts]
+    session_ttl_minutes: 480
+
+  # SPC agent — statistical process control data; blocked from supplier contracts and
+  # financial ledgers. allowed_sources/denied_sources/allowed_tasks/denied_tasks/
+  # max_sensitivity carried over verbatim from the original stub's spc_agent_policy;
+  # task_bindings added for this demo.
+  - name: spc_agent_policy
+    policy_id: spc-agent-policy-001
+    description: "Statistical process control analysis; no supplier contracts or financial ledgers access"
+    agent_role: spc_agent
+    allowed_sources:
+      - spc_charts
+      - measurement_data
+      - process_parameters
+      - product_specs
+      - calibration_records
+    denied_sources:
+      - supplier_contracts
+      - financial_ledgers
+      - hr_records
+      - customer_data
+    allowed_tasks:
+      - control_chart_analysis
+      - process_capability_review
+      - out_of_control_flagging
+      - corrective_action_initiation
+    denied_tasks:
+      - purchase_order_creation
+      - pricing_decision
+      - supplier_communication
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: control_chart_analysis
+        permitted_sources: [spc_charts, measurement_data]
+      - task: process_capability_review
+        permitted_sources: [measurement_data, process_parameters, product_specs]
+      - task: out_of_control_flagging
+        permitted_sources: [spc_charts, process_parameters]
+      - task: corrective_action_initiation
+        permitted_sources: [calibration_records, process_parameters, spc_charts]
+    session_ttl_minutes: 480
+
+  # Supplier quality agent — scorecards and nonconformance reports; blocked from
+  # customer data and financials. allowed_sources/denied_sources/allowed_tasks/
+  # denied_tasks/max_sensitivity carried over verbatim from the original stub's
+  # supplier_quality_agent_policy; task_bindings added for this demo.
+  - name: supplier_quality_agent_policy
+    policy_id: supplier-quality-agent-policy-001
+    description: "Supplier scorecards and nonconformance reporting; no customer data or financials"
+    agent_role: supplier_quality_agent
+    allowed_sources:
+      - supplier_scorecards
+      - inspection_records
+      - nonconformance_reports
+      - product_specs
+      - audit_records
+    denied_sources:
+      - customer_data
+      - financial_ledgers
+      - hr_records
+      - internal_pricing_models
+    allowed_tasks:
+      - supplier_audit
+      - nonconformance_reporting
+      - corrective_action_tracking
+      - supplier_scorecard_update
+    denied_tasks:
+      - purchase_order_creation
+      - pricing_decision
+      - customer_communication
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: supplier_audit
+        permitted_sources: [audit_records, supplier_scorecards]
+      - task: nonconformance_reporting
+        permitted_sources: [nonconformance_reports, inspection_records]
+      - task: corrective_action_tracking
+        permitted_sources: [nonconformance_reports, audit_records, product_specs]
+      - task: supplier_scorecard_update
+        permitted_sources: [supplier_scorecards, inspection_records]
+    session_ttl_minutes: 480
+
+  # Calibration agent — calibration records and equipment registry; blocked from
+  # financials and customer data. allowed_sources/denied_sources/allowed_tasks/
+  # denied_tasks/max_sensitivity carried over verbatim from the original stub's
+  # calibration_agent_policy; task_bindings added for this demo.
+  - name: calibration_agent_policy
+    policy_id: calibration-agent-policy-001
+    description: "Calibration and measurement tracking; no financial or customer data access"
+    agent_role: calibration_agent
+    allowed_sources:
+      - calibration_records
+      - equipment_registry
+      - measurement_data
+      - maintenance_schedules
+      - product_specs
+    denied_sources:
+      - financial_ledgers
+      - customer_data
+      - supplier_contracts
+      - hr_records
+    allowed_tasks:
+      - calibration_scheduling
+      - out_of_tolerance_flagging
+      - equipment_status_update
+      - calibration_report_generation
+    denied_tasks:
+      - purchase_order_creation
+      - pricing_decision
+      - supplier_communication
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: calibration_scheduling
+        permitted_sources: [calibration_records, maintenance_schedules, equipment_registry]
+      - task: out_of_tolerance_flagging
+        permitted_sources: [calibration_records, measurement_data]
+      - task: equipment_status_update
+        permitted_sources: [equipment_registry, maintenance_schedules]
+      - task: calibration_report_generation
+        permitted_sources: [calibration_records, product_specs, measurement_data]
+    session_ttl_minutes: 480
