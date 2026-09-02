@@ -75,9 +75,11 @@ as a whole.
   (not an LLM choice, unlike every other role in this demo) since every case starts
   the same way; the LLM-driven re-routing loop only kicks in afterward, among the 3
   follow-up specialists. Its own module is `quality_control_data.py`, checked
-  against every existing demo's module names before being added. No frontend yet —
-  a separate follow-up task. See its
-  [DESIGN.md](./examples/quality_control/DESIGN.md) and
+  against every existing demo's module names before being added. Has its own
+  standalone `frontend/`, mirroring `hospital_revenue_cycle/frontend/`'s structure,
+  and is also wired into the shared `frontend/src/demos/quality_control/` (see that
+  directory's note below on hand-syncing if either copy ever needs to change). See
+  its [DESIGN.md](./examples/quality_control/DESIGN.md) and
   [README.md](./examples/quality_control/README.md).
 - `frontend/` — a seventh, **additive** frontend covering every demo from one
   `langgraph dev` server, so you don't need two `npm run dev` processes. Each demo's
@@ -491,10 +493,21 @@ as a whole.
   `agent_id` claiming `agent_role="supplier_quality_agent"` to reach
   `nonconformance_reports`). Both verified directly during development, same as the
   other demos' equivalents — see DESIGN.md §9.
-- No hosted AutoPIL SaaS trial mode, no `saas_guard.py`, and no frontend
-  (standalone or shared) — out of scope for this round, see DESIGN.md §8. Unlike
-  every other demo in this repo, the frontend gap here isn't "not yet added as a
-  follow-up round" but an explicit split: this build was backend-only by design,
-  with the frontend as a separate follow-up task.
+- No hosted AutoPIL SaaS trial mode and no `saas_guard.py` — out of scope for this
+  round, see DESIGN.md §8.
+- **Has its own standalone `examples/quality_control/frontend/`** — same
+  Vite + React + TypeScript structure as `hospital_revenue_cycle/frontend/`, minus
+  the MCP/audit-source-choice second interrupt (this demo has only the one
+  disposition interrupt, same as `fraud_investigation`/`aml_compliance`/
+  `hospital_revenue_cycle`). Two things this demo's Execution tab handles
+  differently from that template, since the backend itself behaves differently:
+  the review form requires a non-empty note before Approve *or* Override can be
+  submitted (`decision_node` enforces the same thing server-side, looping on
+  `interrupt()` until it gets one), and the first routing event in the live feed is
+  rendered as a fixed step, not a live routing decision, since
+  `defect_detection_agent` running first is a plain graph edge rather than an LLM
+  choice. Also copied into the shared multi-demo
+  `frontend/src/demos/quality_control/` (see the module immediately above this one
+  for what "keep in sync by hand" means if either one changes later).
 - The audit database `examples/quality_control/quality_control_audit.db` is
   disposable — safe to delete between runs.
