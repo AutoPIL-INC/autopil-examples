@@ -28,7 +28,10 @@ export const INDUSTRIES: Industry[] = [
   { value: "insurance", label: "Insurance", company: "Harborstone Insurance", enabled: false, demos: [] },
   { value: "retail", label: "Retail", company: "Cobalt Retail Group", enabled: false, demos: [] },
   { value: "energy", label: "Energy", company: "Solace Energy", enabled: false, demos: [] },
-  { value: "manufacturing", label: "Manufacturing", company: "Ironview Manufacturing", enabled: false, demos: [] },
+  {
+    value: "manufacturing", label: "Manufacturing", company: "Ironview Manufacturing", enabled: true,
+    demos: ["quality_control"],
+  },
   { value: "real_estate", label: "Real Estate", company: "Willowmark Realty", enabled: false, demos: [] },
   { value: "pharmacy", label: "Pharmacy", company: "Cascade Pharmacy Network", enabled: false, demos: [] },
   { value: "public_sector", label: "Public Sector", company: "Civic Digital Services", enabled: false, demos: [] },

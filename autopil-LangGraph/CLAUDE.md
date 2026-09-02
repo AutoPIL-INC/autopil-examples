@@ -75,7 +75,26 @@ as a whole.
   demo's module names before being added. See its
   [DESIGN.md](./examples/care_coordination/DESIGN.md) and
   [README.md](./examples/care_coordination/README.md).
-- `frontend/` — an eighth, **additive** frontend covering every demo from one
+- `examples/quality_control/` — 5 roles (`quality_orchestrator`,
+  `defect_detection_agent`, `spc_agent`, `supplier_quality_agent`,
+  `calibration_agent`) governing manufacturing quality-investigation data (defect
+  detection, statistical process control, supplier audit/nonconformance,
+  calibration) at Ironview Manufacturing — the third vertical this repo covers,
+  after Financial Services and Healthcare. Adapted from the sibling `autopil` repo's
+  `policies/manufacturing/quality_control.yaml` — a policy stub with no orchestrator
+  role and no `task_bindings` anywhere in it — see its DESIGN.md §2 for exactly what
+  changed and why. `defect_detection_agent` always runs first via a fixed graph edge
+  (not an LLM choice, unlike every other role in this demo or in `care_coordination`)
+  since every case starts the same way; the LLM-driven re-routing loop only kicks in
+  afterward, among the 3 follow-up specialists. Its own module is
+  `quality_control_data.py`, checked against every existing demo's module names
+  before being added. Has its own standalone `frontend/`, mirroring
+  `hospital_revenue_cycle/frontend/`'s structure, and is also wired into the shared
+  `frontend/src/demos/quality_control/` (see that directory's note below on
+  hand-syncing if either copy ever needs to change). See its
+  [DESIGN.md](./examples/quality_control/DESIGN.md) and
+  [README.md](./examples/quality_control/README.md).
+- `frontend/` — a ninth, **additive** frontend covering every demo from one
   `langgraph dev` server, so you don't need two `npm run dev` processes. Each demo's
   own standalone frontend (`examples/*/frontend/`) is untouched and still works
   independently — see [frontend/README.md](./frontend/README.md). The demo-specific
@@ -469,4 +488,91 @@ as a whole.
   immediately above this one for what "keep in sync by hand" means if either one
   changes later).
 - The audit database `examples/care_coordination/care_coordination_audit.db` is
+  disposable — safe to delete between runs.
+
+## Working with the quality_control demo
+
+- Follows `hospital_revenue_cycle`'s exact architecture (`orchestrator_review_node`
+  re-routing loop, rule-based `decision_node` + human `interrupt()`) with one
+  deliberate departure: `defect_detection_agent` always runs first via a fixed graph
+  edge, not an LLM choice. Every quality case starts the same way — a defect gets
+  flagged before anyone investigates why — so there's no real routing decision at
+  that step; `quality_orchestrator_node` sets `route_plan =
+  ["defect_detection_agent"]` directly instead of calling an LLM, the same reasoning
+  `aml_compliance`'s fixed-sequence `intake_node` uses for its own deterministic
+  first step. The LLM-driven re-routing only kicks in afterward, among the 3
+  follow-up specialists (`spc_agent`/`supplier_quality_agent`/`calibration_agent`).
+- **No fixed final specialist.** None of the 3 follow-up specialists is naturally
+  "always last" — which one matters depends on the case (a calibration lapse needs
+  `calibration_agent` last to confirm the overdue date; a supplier issue needs
+  `supplier_quality_agent` last to confirm the open nonconformance) — so
+  `quality_orchestrator` routes among all 3 via the re-routing loop, then compiles
+  the finding itself.
+- **A real bug caught during verification — in the fixture data, not the policy.**
+  The first draft put the control-chart shift's lot-changeover correlation
+  (`lot_changeover_aligned`) inside `spc_charts`, a source `defect_detection_agent`
+  is legitimately authorized to read. Live-tested via the CLI path (Claude Opus),
+  `defect_detection_agent` used that field to reason its way to the correct root
+  cause on every case, including QC-003, **without ever attempting the
+  `cost_data`/`supplier_contracts` over-scope tools** — across 6 consecutive live
+  QC-003 runs it never once called them, because its own authorized read already
+  ruled out a supplier/material cause. Nothing was ever denied that should have been
+  allowed or vice versa — this didn't corrupt any AutoPIL decision — but it silently
+  defeated the demo's own over-scope scenario: the "core over-scope" case never
+  fired because the model had no reason to reach past its lane. Fixed by moving
+  `lot_changeover_aligned`/`nearest_lot_changeover_days_prior` to `measurement_data`
+  (a source only `spc_agent`/`calibration_agent` can read) and adding a one-line
+  case-specific hint to QC-003's background naming a concrete reason to suspect a
+  material substitution. Re-verified live afterward: the over-scope attempt now
+  fires reliably (3/3 follow-up runs). If you add or move a data field between
+  sources in this demo, check not just whether AutoPIL denies/allows it correctly,
+  but whether the change removes a role's actual *reason* to reach for an
+  over-scope tool at all — see DESIGN.md §7 for the fuller writeup.
+- **Every `(source, task_type)` pair and every role's `max_sensitivity` were
+  cross-checked against `quality_control.yaml`'s `task_bindings`/real source ratings
+  *before* the first live run**, specifically to avoid the task_type/task_bindings
+  mismatch `aml_compliance` caught and the sensitivity-ceiling mismatch
+  `hospital_revenue_cycle` caught. No such bug was found here — all 5 roles' real,
+  allowed sources are rated `low`/`medium` (matching the original stub's
+  `max_sensitivity: medium` for the 4 specialists) or `high` (matching
+  `quality_orchestrator`'s `agent_outputs`, ceiling set to `high` from the start) —
+  see DESIGN.md §6 for the full cross-check.
+- `decision_node` is rule-based, grounded in real underlying signal data
+  (`quality_control_data.CALIBRATION_RECORDS`/`NONCONFORMANCE_REPORTS`/
+  `MEASUREMENT_DATA`) — not any role's self-reported finding — same principle as
+  every other demo's decision node. `proposed_action` is one of 5 small **fixed**
+  labels (`PROPOSED_ACTIONS`), same convention as `hospital_revenue_cycle_demo.py`'s/
+  `aml_compliance_demo.py`'s own fix for this.
+- **A written note is required on both approve and override, not just override** —
+  the one demo in this repo where `decision_node` enforces this itself rather than
+  leaving it to the (not-yet-built) frontend: it loops on `interrupt()` until a
+  non-empty `notes` field comes back on the resume payload. This is a deliberate,
+  confirmed-effective UX choice, enforced server-side independent of whatever the
+  frontend does. The CLI's `run_case()` supplies
+  `"Auto-approved via CLI unattended run."` on every resume so it stays unattended.
+- Two attack-surface tools on `quality_finding_tools()` mirror
+  `sar_generator_tools()`/`revenue_summary_tools()`'s exactly:
+  `get_case_agent_outputs` (session isolation — reaches `agent_outputs` through
+  `calibration_agent`'s session instead of its own) and
+  `get_subject_nonconformance_status` (role spoofing — `quality_orchestrator`'s real
+  `agent_id` claiming `agent_role="supplier_quality_agent"` to reach
+  `nonconformance_reports`). Both verified directly during development, same as the
+  other demos' equivalents — see DESIGN.md §9.
+- No hosted AutoPIL SaaS trial mode and no `saas_guard.py` — out of scope for this
+  round, see DESIGN.md §8.
+- **Has its own standalone `examples/quality_control/frontend/`** — same
+  Vite + React + TypeScript structure as `hospital_revenue_cycle/frontend/`, minus
+  the MCP/audit-source-choice second interrupt (this demo has only the one
+  disposition interrupt, same as `fraud_investigation`/`aml_compliance`/
+  `hospital_revenue_cycle`). Two things this demo's Execution tab handles
+  differently from that template, since the backend itself behaves differently:
+  the review form requires a non-empty note before Approve *or* Override can be
+  submitted (`decision_node` enforces the same thing server-side, looping on
+  `interrupt()` until it gets one), and the first routing event in the live feed is
+  rendered as a fixed step, not a live routing decision, since
+  `defect_detection_agent` running first is a plain graph edge rather than an LLM
+  choice. Also copied into the shared multi-demo
+  `frontend/src/demos/quality_control/` (see the module immediately above this one
+  for what "keep in sync by hand" means if either one changes later).
+- The audit database `examples/quality_control/quality_control_audit.db` is
   disposable — safe to delete between runs.
