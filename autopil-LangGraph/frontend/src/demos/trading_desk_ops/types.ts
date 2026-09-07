@@ -157,22 +157,22 @@ export const CASE_INFO: Record<(typeof CASE_IDS)[number], { title: string; descr
     estimatedTime: "~1–2 min",
   },
   "EQ-002": {
-    title: "Same-day affirmation exception — 10,000 shares MSFT",
+    title: "Same-day affirmation exception — 10,000 shares NVDA",
     description: "One custodian account on file for this client base hasn't been re-verified in a long time — worth tracing before this trade affirms.",
     estimatedTime: "~1–2 min",
   },
   "EQ-003": {
-    title: "Affirmation discrepancy — 10,000 shares MSFT",
+    title: "Affirmation discrepancy — 10,000 shares AAPL",
     description: "Standard processing expected, flagged for review since affirmation doesn't match cleanly on the same trade-date.",
     estimatedTime: "~1–2 min",
   },
   "EQ-004": {
-    title: "PM rebalance instruction — 4,000 shares MSFT",
+    title: "PM rebalance instruction — 4,000 shares AMZN",
     description: "An already-structured portfolio-manager rebalance instruction, not a raw FIX/email order — watch how the orchestrator routes this differently from a new order.",
     estimatedTime: "~1–2 min",
   },
   "EQ-005": {
-    title: "Settlement desk flag — 10,000 shares MSFT",
+    title: "Settlement desk flag — 10,000 shares GOOG",
     description: "The settlement desk flagged a possible inventory shortfall ahead of the settlement date — needs verification before it's confirmed as a real risk.",
     estimatedTime: "~1–2 min",
   },
@@ -189,10 +189,10 @@ export interface CaseMeta {
 
 export const CASE_META: Record<(typeof CASE_IDS)[number], CaseMeta> = {
   "EQ-001": { caseId: "EQ-001", symbol: "MSFT", side: "BUY", totalQuantity: 10000 },
-  "EQ-002": { caseId: "EQ-002", symbol: "MSFT", side: "BUY", totalQuantity: 10000 },
-  "EQ-003": { caseId: "EQ-003", symbol: "MSFT", side: "BUY", totalQuantity: 10000 },
-  "EQ-004": { caseId: "EQ-004", symbol: "MSFT", side: "SELL", totalQuantity: 4000 },
-  "EQ-005": { caseId: "EQ-005", symbol: "MSFT", side: "BUY", totalQuantity: 10000 },
+  "EQ-002": { caseId: "EQ-002", symbol: "NVDA", side: "BUY", totalQuantity: 10000 },
+  "EQ-003": { caseId: "EQ-003", symbol: "AAPL", side: "BUY", totalQuantity: 10000 },
+  "EQ-004": { caseId: "EQ-004", symbol: "AMZN", side: "SELL", totalQuantity: 4000 },
+  "EQ-005": { caseId: "EQ-005", symbol: "GOOG", side: "BUY", totalQuantity: 10000 },
 };
 
 // Must match _make_llm()'s provider strings in trading_desk_ops_demo.py.

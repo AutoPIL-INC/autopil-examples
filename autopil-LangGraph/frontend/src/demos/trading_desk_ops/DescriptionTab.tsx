@@ -41,7 +41,8 @@ export default function DescriptionTab() {
       <section className="desc-section">
         <h2>What this demo shows</h2>
         <p>
-          Seven AI agents handle a 10,000-share MSFT block order the way a real
+          Seven AI agents handle a block equity order — a different name each scenario
+          (MSFT, NVDA, AAPL, AMZN, GOOG) — the way a real
           trading-operations desk at Meridian Bank would — an orchestrator, an order
           intake parser, an allocation specialist, a same-day affirmation matcher, a
           DTCC/NSCC settlement reconciler, an exception investigator, and a compliance

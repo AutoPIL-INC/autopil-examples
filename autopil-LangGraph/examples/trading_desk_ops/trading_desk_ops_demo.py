@@ -1,9 +1,10 @@
 """
 AutoPIL + LangGraph: Trading Desk Ops — Equities Sub-Domain (7 roles)
 ========================================================================
-Meridian Bank's Trading Unit. A 10,000-share MSFT order triggers allocation across
-client sub-accounts, same-day affirmation, DTCC/NSCC settlement verification, and
-(when something breaks) exception investigation — inside a T+1 settlement window.
+Meridian Bank's Trading Unit. A block equity order (a distinct ticker per scenario —
+MSFT, NVDA, AAPL, AMZN, GOOG) triggers allocation across client sub-accounts,
+same-day affirmation, DTCC/NSCC settlement verification, and (when something breaks)
+exception investigation — inside a T+1 settlement window.
 
 Seven roles (trading_ops_orchestrator / order_intake_agent / allocation_agent /
 affirmation_matching_agent / settlement_reconciliation_agent /
@@ -428,7 +429,7 @@ def order_intake_agent_tools(case_id: str) -> list:
     return [
         _build_tool("get_raw_instructions", f"Raw FIX/email order instruction text for a case. {c}",
                     role, "raw_instructions", SensitivityLevel.MEDIUM, role, aid, "order_parsing"),
-        _build_tool("get_security_master", "Security master reference data. Call with key='MSFT' (the symbol).",
+        _build_tool("get_security_master", "Security master reference data. Call with key=<this case's symbol, from your brief> (the ticker).",
                     role, "security_master", SensitivityLevel.LOW, role, aid, "short_sale_flagging"),
         # over-scope: NOT in order_intake_agent_policy.allowed_sources
         _build_tool("get_client_account_data", f"Client sub-account data for this block, if you want to check "

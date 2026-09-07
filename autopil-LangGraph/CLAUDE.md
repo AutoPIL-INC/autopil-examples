@@ -97,7 +97,8 @@ as a whole.
 - `examples/trading_desk_ops/` — 7 roles (`trading_ops_orchestrator`,
   `order_intake_agent`, `allocation_agent`, `affirmation_matching_agent`,
   `settlement_reconciliation_agent`, `exception_investigation_agent`,
-  `compliance_reporting_agent`) governing a 10,000-share MSFT block order at Meridian
+  `compliance_reporting_agent`) governing a block equity order (a distinct ticker per
+  scenario — MSFT, NVDA, AAPL, AMZN, GOOG) at Meridian
   Bank's Trading Unit — allocation, same-day affirmation, DTCC/NSCC settlement
   verification, and exception investigation, inside a T+1 window. First of a planned
   5-sub-domain build (`/TRADING_OPS_ROADMAP.md`; only the Equities sub-domain is

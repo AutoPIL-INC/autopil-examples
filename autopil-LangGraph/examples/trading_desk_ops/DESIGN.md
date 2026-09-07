@@ -153,7 +153,7 @@ not touching `trading_ops_orchestrator_node`'s classification call itself, whose
   difference, not just a different label on the same path. Clean thereafter. **Tier 1.**
 - **EQ-005 — Genuine fails-to-deliver risk (highest severity).**
   `INTERNAL_POSITION_LEDGER["EQ-005"]` shows the firm holding only 7,000 of the 10,000
-  MSFT shares it owes DTCC/NSCC (`inventory_shortfall: 3000`).
+  GOOG shares it owes DTCC/NSCC (`inventory_shortfall: 3000`).
   `settlement_reconciliation_agent` surfaces the shortfall (its own authorized read);
   `exception_investigation_agent` triages it as a genuine fails-to-deliver risk,
   pulling in `reg_sho_locate_data` (`locate_required: True, locate_obtained: False`).
@@ -275,8 +275,8 @@ Live-tested via the CLI path (`ANTHROPIC_API_KEY`, Claude) across all 5 EQ-### c
   `skipped_roles=["order_intake_agent"]`, and `orchestrator_review_node`'s own
   `remaining` candidate list never included `order_intake_agent` at any step. EQ-001's
   trace shows `trigger_type=new_order`, `route_plan=["order_intake_agent"]`, first
-  node actually executed is `order_intake_agent`. Same case shape (10,000-ish share
-  MSFT block), genuinely different path.
+  node actually executed is `order_intake_agent`. Same case-family shape (a Meridian
+  Bank block trade), genuinely different path.
 - **EQ-005** — `settlement_reconciliation_agent` surfaced
   `internal_position_ledger.inventory_shortfall == 3000`;
   `exception_investigation_agent` pulled `reg_sho_locate_data` (`locate_required:

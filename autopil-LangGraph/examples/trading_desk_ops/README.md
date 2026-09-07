@@ -1,7 +1,8 @@
 # Trading Desk Ops (Equities) — Reasoning-Driven Multi-Agent Demo
 
-Seven specialist Claude agents, orchestrated with LangGraph, handle a 10,000-share MSFT
-order at Meridian Bank's Trading Unit — allocation across client sub-accounts, same-day
+Seven specialist Claude agents, orchestrated with LangGraph, handle a block equity
+order (a distinct ticker per scenario — MSFT, NVDA, AAPL, AMZN, GOOG) at Meridian
+Bank's Trading Unit — allocation across client sub-accounts, same-day
 affirmation, DTCC/NSCC settlement verification, and (when something breaks) exception
 investigation — inside a T+1 settlement window, under a real AutoPIL policy. See
 [DESIGN.md](./DESIGN.md) for the full design rationale, including why no existing

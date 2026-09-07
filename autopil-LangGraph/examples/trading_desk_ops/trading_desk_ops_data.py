@@ -11,8 +11,9 @@ module-name-collision note) — no collision:
     simulated_data.py, hospital_revenue_cycle_data.py, portfolio_review_uc_data.py,
     quality_control_data.py, splunk_secops_data.py
 
-Five scenarios, all a 10,000-share (or, for EQ-004, a smaller PM-directed) MSFT order
-at Meridian Bank's Trading Unit, inside a T+1 settlement window:
+Five scenarios, each a distinct blue-chip name — EQ-001 MSFT, EQ-002 NVDA, EQ-003 AAPL,
+EQ-004 AMZN, EQ-005 GOOG — all a 10,000-share (or, for EQ-004, a smaller PM-directed)
+block order at Meridian Bank's Trading Unit, inside a T+1 settlement window:
 
 - EQ-001 — clean straight-through. New order, long, clean 3-way allocation, clean
   affirmation, clean DTCC/NSCC match. No exceptions.
@@ -68,32 +69,32 @@ CASE_METADATA = {
     "EQ-002": {
         "case_id": "EQ-002", "status": "open",
         "trigger_brief": (
-            "New order received via FIX message: BUY 10,000 shares MSFT, block order "
+            "New order received via FIX message: BUY 10,000 shares NVDA, block order "
             "for allocation across institutional sub-accounts. One custodian account "
             "on file for this client base has not been re-verified in a long time."
         ),
-        "symbol": "MSFT", "total_quantity": 10000, "side": "BUY",
+        "symbol": "NVDA", "total_quantity": 10000, "side": "BUY",
         "structured_order": None,
     },
     "EQ-003": {
         "case_id": "EQ-003", "status": "open",
         "trigger_brief": (
-            "New order received via FIX message: BUY 10,000 shares MSFT, block order "
+            "New order received via FIX message: BUY 10,000 shares AAPL, block order "
             "for allocation across institutional sub-accounts. Standard processing "
             "expected; flag for review if affirmation doesn't match same trade-date."
         ),
-        "symbol": "MSFT", "total_quantity": 10000, "side": "BUY",
+        "symbol": "AAPL", "total_quantity": 10000, "side": "BUY",
         "structured_order": None,
     },
     "EQ-004": {
         "case_id": "EQ-004", "status": "open",
         "trigger_brief": (
             "Portfolio manager rebalance instruction (from the PM's own system, "
-            "already structured — not a raw FIX/email order): SELL 4,000 shares MSFT "
+            "already structured — not a raw FIX/email order): SELL 4,000 shares AMZN "
             "across 3 sub-accounts to fund a rebalance into another position. No raw "
             "order text to parse."
         ),
-        "symbol": "MSFT", "total_quantity": 4000, "side": "SELL",
+        "symbol": "AMZN", "total_quantity": 4000, "side": "SELL",
         "structured_order": {
             "SUB-HAR": 1500, "SUB-MFF": 1500, "SUB-CIP": 1000,
         },
@@ -101,12 +102,12 @@ CASE_METADATA = {
     "EQ-005": {
         "case_id": "EQ-005", "status": "open",
         "trigger_brief": (
-            "New order received via FIX message: BUY 10,000 shares MSFT, block order "
+            "New order received via FIX message: BUY 10,000 shares GOOG, block order "
             "for allocation across institutional sub-accounts. Settlement desk flagged "
             "a possible inventory shortfall ahead of the settlement date — needs "
             "verification before this is confirmed as a real risk."
         ),
-        "symbol": "MSFT", "total_quantity": 10000, "side": "BUY",
+        "symbol": "GOOG", "total_quantity": 10000, "side": "BUY",
         "structured_order": None,
     },
 }
@@ -127,11 +128,11 @@ AGENT_OUTPUTS = {
 RAW_INSTRUCTIONS = {
     "EQ-001": "FIX NewOrderSingle: ClOrdID=ORD-EQ001, Symbol=MSFT, Side=1(Buy), OrderQty=10000, "
               "OrdType=2(Limit), Price=412.50, Account=BLOCK-EQ001, TimeInForce=0(Day)",
-    "EQ-002": "FIX NewOrderSingle: ClOrdID=ORD-EQ002, Symbol=MSFT, Side=1(Buy), OrderQty=10000, "
+    "EQ-002": "FIX NewOrderSingle: ClOrdID=ORD-EQ002, Symbol=NVDA, Side=1(Buy), OrderQty=10000, "
               "OrdType=2(Limit), Price=413.10, Account=BLOCK-EQ002, TimeInForce=0(Day)",
-    "EQ-003": "FIX NewOrderSingle: ClOrdID=ORD-EQ003, Symbol=MSFT, Side=1(Buy), OrderQty=10000, "
+    "EQ-003": "FIX NewOrderSingle: ClOrdID=ORD-EQ003, Symbol=AAPL, Side=1(Buy), OrderQty=10000, "
               "OrdType=2(Limit), Price=411.85, Account=BLOCK-EQ003, TimeInForce=0(Day)",
-    "EQ-005": "FIX NewOrderSingle: ClOrdID=ORD-EQ005, Symbol=MSFT, Side=1(Buy), OrderQty=10000, "
+    "EQ-005": "FIX NewOrderSingle: ClOrdID=ORD-EQ005, Symbol=GOOG, Side=1(Buy), OrderQty=10000, "
               "OrdType=2(Limit), Price=414.00, Account=BLOCK-EQ005, TimeInForce=0(Day)",
 }
 
@@ -140,35 +141,51 @@ SECURITY_MASTER = {
         "symbol": "MSFT", "cusip": "594918104", "primary_exchange": "NASDAQ",
         "short_sale_restricted": False, "threshold_security_flag": False, "tick_size": 0.01,
     },
+    "NVDA": {
+        "symbol": "NVDA", "cusip": "67066G104", "primary_exchange": "NASDAQ",
+        "short_sale_restricted": False, "threshold_security_flag": False, "tick_size": 0.01,
+    },
+    "AAPL": {
+        "symbol": "AAPL", "cusip": "037833100", "primary_exchange": "NASDAQ",
+        "short_sale_restricted": False, "threshold_security_flag": False, "tick_size": 0.01,
+    },
+    "AMZN": {
+        "symbol": "AMZN", "cusip": "023135106", "primary_exchange": "NASDAQ",
+        "short_sale_restricted": False, "threshold_security_flag": False, "tick_size": 0.01,
+    },
+    "GOOG": {
+        "symbol": "GOOG", "cusip": "02079K107", "primary_exchange": "NASDAQ",
+        "short_sale_restricted": False, "threshold_security_flag": False, "tick_size": 0.01,
+    },
 }
 
 # ── allocation_agent sources — scoped to accounts in THIS block only; the tool
 #    implementation keys strictly by case_id, never exposing another case's block. ───
 CLIENT_ACCOUNT_DATA = {
     "EQ-001": {
-        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_msft_weight_pct": 3.2},
-        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_msft_weight_pct": 2.1},
-        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_msft_weight_pct": 4.4},
+        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_position_weight_pct": 3.2},
+        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_position_weight_pct": 2.1},
+        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_position_weight_pct": 4.4},
     },
     "EQ-002": {
-        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_msft_weight_pct": 3.0},
-        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_msft_weight_pct": 2.4},
-        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_msft_weight_pct": 4.1},
+        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_position_weight_pct": 3.0},
+        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_position_weight_pct": 2.4},
+        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_position_weight_pct": 4.1},
     },
     "EQ-003": {
-        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_msft_weight_pct": 3.5},
-        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_msft_weight_pct": 2.0},
-        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_msft_weight_pct": 4.6},
+        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_position_weight_pct": 3.5},
+        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_position_weight_pct": 2.0},
+        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_position_weight_pct": 4.6},
     },
     "EQ-004": {
-        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_msft_weight_pct": 6.8},
-        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_msft_weight_pct": 5.9},
-        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_msft_weight_pct": 7.2},
+        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_position_weight_pct": 6.8},
+        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_position_weight_pct": 5.9},
+        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_position_weight_pct": 7.2},
     },
     "EQ-005": {
-        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_msft_weight_pct": 3.3},
-        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_msft_weight_pct": 2.2},
-        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_msft_weight_pct": 4.5},
+        "SUB-HAR": {**SUB_ACCOUNTS["SUB-HAR"], "concentration_limit_pct": 10.0, "current_position_weight_pct": 3.3},
+        "SUB-MFF": {**SUB_ACCOUNTS["SUB-MFF"], "concentration_limit_pct": 8.0, "current_position_weight_pct": 2.2},
+        "SUB-CIP": {**SUB_ACCOUNTS["SUB-CIP"], "concentration_limit_pct": 12.0, "current_position_weight_pct": 4.5},
     },
 }
 
@@ -181,7 +198,7 @@ CLIENT_POSITION_DATA = {
 }
 
 INVESTMENT_RESTRICTIONS = {
-    case_id: {"restricted_list": [], "wash_sale_watch": False, "block_notes": "Standard allocation — no client-specific restriction on MSFT."}
+    case_id: {"restricted_list": [], "wash_sale_watch": False, "block_notes": f"Standard allocation — no client-specific restriction on {CASE_METADATA[case_id]['symbol']}."}
     for case_id in CASE_IDS
 }
 
@@ -194,10 +211,10 @@ STRUCTURED_ORDERS = {
 # ── affirmation_matching_agent sources ───────────────────────────────────────────────
 TRADE_CAPTURE = {
     "EQ-001": {"internal_trade_id": "TRD-EQ001", "symbol": "MSFT", "quantity": 10000, "price": 412.50, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
-    "EQ-002": {"internal_trade_id": "TRD-EQ002", "symbol": "MSFT", "quantity": 10000, "price": 413.10, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
-    "EQ-003": {"internal_trade_id": "TRD-EQ003", "symbol": "MSFT", "quantity": 10000, "price": 411.85, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
-    "EQ-004": {"internal_trade_id": "TRD-EQ004", "symbol": "MSFT", "quantity": 4000, "price": 415.20, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
-    "EQ-005": {"internal_trade_id": "TRD-EQ005", "symbol": "MSFT", "quantity": 10000, "price": 414.00, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
+    "EQ-002": {"internal_trade_id": "TRD-EQ002", "symbol": "NVDA", "quantity": 10000, "price": 413.10, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
+    "EQ-003": {"internal_trade_id": "TRD-EQ003", "symbol": "AAPL", "quantity": 10000, "price": 411.85, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
+    "EQ-004": {"internal_trade_id": "TRD-EQ004", "symbol": "AMZN", "quantity": 4000, "price": 415.20, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
+    "EQ-005": {"internal_trade_id": "TRD-EQ005", "symbol": "GOOG", "quantity": 10000, "price": 414.00, "trade_date": "2026-09-08", "settle_date": "2026-09-09"},
 }
 
 COUNTERPARTY_RECORDS = {
