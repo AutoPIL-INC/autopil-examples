@@ -94,7 +94,28 @@ as a whole.
   hand-syncing if either copy ever needs to change). See its
   [DESIGN.md](./examples/quality_control/DESIGN.md) and
   [README.md](./examples/quality_control/README.md).
-- `frontend/` — a ninth, **additive** frontend covering every demo from one
+- `examples/trading_desk_ops/` — 7 roles (`trading_ops_orchestrator`,
+  `order_intake_agent`, `allocation_agent`, `affirmation_matching_agent`,
+  `settlement_reconciliation_agent`, `exception_investigation_agent`,
+  `compliance_reporting_agent`) governing a 10,000-share MSFT block order at Meridian
+  Bank's Trading Unit — allocation, same-day affirmation, DTCC/NSCC settlement
+  verification, and exception investigation, inside a T+1 window. First of a planned
+  5-sub-domain build (`/TRADING_OPS_ROADMAP.md`; only the Equities sub-domain is
+  built so far) — `TRADING_DOMAINS` is shaped so FX/Commodities/Fixed Income/
+  International can be added later as sibling entries without restructuring the
+  graph, same relationship `institutional_portfolio_review`'s `REVIEW_TYPES` has to
+  its own workflow types. Two departures from every prior demo: the orchestrator's
+  trigger classification is a genuinely dynamic LLM call (not a fixed first step,
+  unlike `quality_control`), and `decision_node` routes to one of **two** human
+  review tiers (ops-analyst vs. compliance-officer) based on real underlying
+  fixture data, not the case ID. No existing autopil policy stub matched this
+  domain — designed from scratch, though its `regulations:` metadata-block
+  convention was borrowed from `policies/financial_services/
+  clearing_settlement.yaml`. Its own module is `trading_desk_ops_data.py`, checked
+  against every existing demo's module names before being added. See its
+  [DESIGN.md](./examples/trading_desk_ops/DESIGN.md) and
+  [README.md](./examples/trading_desk_ops/README.md).
+- `frontend/` — a tenth, **additive** frontend covering every demo from one
   `langgraph dev` server, so you don't need two `npm run dev` processes. Each demo's
   own standalone frontend (`examples/*/frontend/`) is untouched and still works
   independently — see [frontend/README.md](./frontend/README.md). The demo-specific
@@ -575,4 +596,93 @@ as a whole.
   `frontend/src/demos/quality_control/` (see the module immediately above this one
   for what "keep in sync by hand" means if either one changes later).
 - The audit database `examples/quality_control/quality_control_audit.db` is
+  disposable — safe to delete between runs.
+
+## Working with the trading_desk_ops demo
+
+- Follows `fraud_investigation`'s architecture (LLM-driven orchestrator routing,
+  `orchestrator_review_node` re-routing loop, rule-based `decision_node` + human
+  `interrupt()`) — moved into Financial Services' trading-operations surface, first
+  of a planned 5-sub-domain build (see `/TRADING_OPS_ROADMAP.md`). Only the Equities
+  sub-domain is built this round.
+- **`trading_ops_orchestrator`'s classification step is genuinely dynamic, not a
+  fixed first step** — a deliberate departure from `quality_control`'s
+  `defect_detection_agent`-always-first design. It classifies the incoming trigger
+  (new order / amendment / cancellation / PM rebalance / corporate-action trade) via
+  a real LLM call, and that classification decides which specialist runs FIRST: a
+  new-order/amendment trigger routes through `order_intake_agent`; a PM-rebalance
+  trigger (EQ-004) skips it entirely and routes straight to `allocation_agent`, since
+  the PM's system already produced structured data with nothing to parse. Verified
+  live that EQ-004's actual graph path differs from EQ-001's, not just that both
+  complete — see its DESIGN.md §10.
+- **Extensible domain registry, not a new example per sub-domain.**
+  `TRADING_DOMAINS` mirrors `institutional_portfolio_review`'s `REVIEW_TYPES` shape —
+  one dict keyed by sub-domain (`specialist_roles` / `first_step_by_trigger` /
+  `skip_by_trigger`), with only `"equities"` populated. A future PR adds `"fx"` /
+  `"commodities"` / `"fixed_income"` / `"international"` as sibling entries and their
+  own specialist node functions, without restructuring `build_graph()` or
+  `trading_ops_orchestrator_node`'s classification call itself (whose `domain` enum
+  already reads off `list(TRADING_DOMAINS.keys())`). See its DESIGN.md §4.
+- **Two-tier human review — new mechanism, not present in any other demo in this
+  repo.** `decision_node` classifies severity from real underlying fixture data (an
+  actual `inventory_shortfall` field, an actual `ssi_stale`/`break_type` field) —
+  never any role's self-reported finding, never a `case_id -> tier` lookup — and
+  routes the `interrupt()` to one of two reviewer tiers: Tier 1 (ops-analyst, routine
+  corrections — EQ-002/EQ-003) or Tier 2 (compliance-officer, escalated
+  settlement-risk events — EQ-005, invoking Reg SHO locate-requirement logic). The
+  interrupt payload carries `tier`/`tier_label` explicitly so a future frontend can
+  render a different reviewer form per tier. A written note is required on BOTH
+  approve and override, on BOTH tiers — same confirmed-effective UX choice
+  `quality_control`'s `decision_node` established for one tier, applied here across
+  two.
+- **No existing autopil policy stub matched this domain** — designed from scratch
+  (unlike `hospital_revenue_cycle`/`care_coordination`/`quality_control`, each
+  adapted from a real stub in the sibling `autopil` repo).
+  `policies/financial_services/clearing_settlement.yaml` was checked first and
+  doesn't match (interbank wire/Fedwire/CHIPS clearing, not securities trade
+  settlement), but its top-level `regulations:` metadata-block convention
+  (`id`/`name`/`applicable_rules`/`how_enforced`) was borrowed for
+  `trading_desk_ops.yaml`, populated from `TRADING_OPS_ROADMAP.md`'s own
+  compliance-framework table instead (SEC Rule 15c6-1/15c6-2/15c3-3/17a-4, DTCC/NSCC
+  CNS, Reg SHO, FINRA CAT, FINRA Rule 5310, information barriers/MNPI).
+- **Every `(source, task_type)` pair and every role's `max_sensitivity` were
+  cross-checked against `trading_desk_ops.yaml`'s `task_bindings`/real source
+  ratings *before* the first live run**, same discipline `quality_control`'s
+  DESIGN.md §6 established after this exact bug class recurred in
+  `aml_compliance`/`hospital_revenue_cycle`/`care_coordination`. No task_bindings/
+  sensitivity-ceiling bug was found here — see DESIGN.md §11 for the full cross-check.
+- **A real bug caught during verification — in the prompt design, not the policy.**
+  The first live run showed `affirmation_matching_agent` checking only
+  quantity/price (`trade_capture` vs `counterparty_records`) and self-reporting a
+  clean match for EQ-002 **without ever calling `get_ssi_data`** — meaning the
+  SSI-staleness signal never surfaced through its own reasoning, and
+  `orchestrator_review_node` never routed to `exception_investigation_agent` at all.
+  `decision_node`'s final disposition was still correct (it's grounded directly in
+  `data.AFFIRMATION_RESULTS`/`data.SSI_DATA`, never any role's self-report), but the
+  scenario's own investigative narrative didn't fire — same shape of bug
+  `quality_control`'s DESIGN.md §7 documents (a fixture/prompt-design issue that let
+  a role bypass its own investigative reasoning, not a policy misconfiguration).
+  Fixed with a one-line `ROLE_FOCUS_HINTS` steer (mirroring
+  `institutional_portfolio_review`'s convention) telling
+  `affirmation_matching_agent` that same-day affirmation has two independent
+  angles — quantity/price AND per-sub-account SSI currency — not just one.
+  Re-verified live afterward: the role now reliably calls `get_ssi_data` and the
+  EQ-002 reroute to `exception_investigation_agent` fires as designed. See
+  DESIGN.md §10 for the full writeup.
+- Two attack-surface tools on `compliance_report_tools()` mirror every sibling
+  demo's final-role equivalent: session isolation (`get_case_agent_outputs`, reaching
+  `agent_outputs` through `exception_investigation_agent`'s session instead of
+  `compliance_reporting_agent`'s own) and role spoofing
+  (`get_subject_settlement_status`, `compliance_reporting_agent`'s real `agent_id`
+  claiming `agent_role="settlement_reconciliation_agent"` to reach `dtcc_cns_data`).
+  **The session-isolation tool has a precondition worth knowing**: it only denies
+  once `exception_investigation_agent`'s session has already been established by a
+  real call under that role earlier in the same case (true for EQ-002/EQ-003/EQ-005,
+  where it runs) — this is `guard.protect()`'s documented session-lifecycle behavior
+  (a session is only "stolen" once it has an existing owner), not a bug in this demo.
+  Both verified directly (bypassing the LLM) during development — see DESIGN.md §10.
+- No hosted AutoPIL SaaS trial mode and **no frontend yet** (standalone or wired into
+  the shared multi-demo viewer) — both out of scope for this round, same starting
+  point `quality_control` had in its own initial round; separate follow-up tasks.
+- The audit database `examples/trading_desk_ops/trading_desk_ops_audit.db` is
   disposable — safe to delete between runs.
