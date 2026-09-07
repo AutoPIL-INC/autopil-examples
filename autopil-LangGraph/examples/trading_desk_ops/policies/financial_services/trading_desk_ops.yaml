@@ -4,8 +4,18 @@
 # metadata block convention (id/name/applicable_rules/how_enforced) is borrowed from
 # that file, populated instead from TRADING_OPS_ROADMAP.md's compliance-framework
 # table. See DESIGN.md §2 for the full rationale.
+#
+# NOTE on the header fields below (industry/company/organization/division/
+# process_group): these are documentation only — confirmed against the AutoPIL SDK's
+# PolicyEngine._load(), which reads only the `policies:` list from this file; nothing
+# else at the top level is parsed or enforced at runtime. The one place agent
+# ownership is actually enforced is the AutoPIL Agent model's `owner`/`owner_team`
+# fields, set via bootstrap_agents() in a demo's own *_saas_guard.py (hosted SaaS
+# trial mode only) — not present here, since that mode is out of scope for this
+# demo's first round (see DESIGN.md §8).
 industry: financial_services
-organization: Trading_Unit
+company: Meridian Bank
+organization: Trading Desk Ops
 division: Equities Trading Operations
 process_group: trading_desk_ops
 
@@ -99,7 +109,7 @@ policies:
         permitted_sources: [case_metadata]
       - task: route_investigation
         permitted_sources: [case_metadata, agent_outputs]
-    session_ttl_minutes: 480
+    session_ttl_minutes: 1440
 
   # Order intake — parses raw instruction + security master; no client/position/
   # pricing/commission data. Skipped entirely on the PM-rebalance path (EQ-004).
@@ -131,7 +141,7 @@ policies:
         permitted_sources: [raw_instructions]
       - task: short_sale_flagging
         permitted_sources: [security_master]
-    session_ttl_minutes: 120
+    session_ttl_minutes: 1440
 
   # Allocation agent — splits the block across sub-accounts for THIS case only;
   # denied pricing, commission, other blocks' allocations, and other clients' positions.
@@ -164,7 +174,7 @@ policies:
         permitted_sources: [client_account_data, client_position_data, structured_orders]
       - task: concentration_check
         permitted_sources: [client_position_data, investment_restrictions]
-    session_ttl_minutes: 120
+    session_ttl_minutes: 1440
 
   # Affirmation matching — internal capture vs. counterparty/custodian + SSI, same
   # trade-date. A mismatch is a flag, never a unilateral fix.
@@ -195,7 +205,7 @@ policies:
         permitted_sources: [trade_capture, counterparty_records]
       - task: ssi_verification
         permitted_sources: [ssi_data]
-    session_ttl_minutes: 60
+    session_ttl_minutes: 1440
 
   # Settlement reconciliation — DTCC/NSCC net obligation vs. internal ledger. Denied
   # desk P&L/commissions/unrelated client orders.
@@ -222,7 +232,7 @@ policies:
     task_bindings:
       - task: settlement_verification
         permitted_sources: [dtcc_cns_data, internal_position_ledger]
-    session_ttl_minutes: 60
+    session_ttl_minutes: 1440
 
   # Exception investigation — widest reasoning scope of any role (whatever's relevant
   # to the specific flagged break), but still denied desk P&L/commission (the
@@ -255,7 +265,7 @@ policies:
     task_bindings:
       - task: break_triage
         permitted_sources: [dtcc_cns_data, internal_position_ledger, ssi_data, trade_capture, counterparty_records, reg_sho_locate_data, share_inventory_data]
-    session_ttl_minutes: 120
+    session_ttl_minutes: 1440
 
   # Compliance reporting — compiles the FINRA CAT-style audit record from
   # agent_outputs only; never touches a raw source. Same compiler pattern every
@@ -296,4 +306,4 @@ policies:
     task_bindings:
       - task: audit_compilation
         permitted_sources: [agent_outputs]
-    session_ttl_minutes: 60
+    session_ttl_minutes: 1440
