@@ -1,0 +1,309 @@
+# NOTE: designed from scratch for this demo — no existing autopil policy stub matched
+# (policies/financial_services/clearing_settlement.yaml covers interbank wire/Fedwire/
+# CHIPS clearing, not securities trade settlement). The `regulations:` top-level
+# metadata block convention (id/name/applicable_rules/how_enforced) is borrowed from
+# that file, populated instead from TRADING_OPS_ROADMAP.md's compliance-framework
+# table. See DESIGN.md §2 for the full rationale.
+#
+# NOTE on the header fields below (industry/company/organization/division/
+# process_group): these are documentation only — confirmed against the AutoPIL SDK's
+# PolicyEngine._load(), which reads only the `policies:` list from this file; nothing
+# else at the top level is parsed or enforced at runtime. The one place agent
+# ownership is actually enforced is the AutoPIL Agent model's `owner`/`owner_team`
+# fields, set via bootstrap_agents() in a demo's own *_saas_guard.py (hosted SaaS
+# trial mode only) — not present here, since that mode is out of scope for this
+# demo's first round (see DESIGN.md §8).
+industry: financial_services
+company: Meridian Bank
+organization: Trading Desk Ops
+division: Equities Trading Operations
+process_group: trading_desk_ops
+
+regulations:
+  - id: SEC-15C6-1
+    name: "SEC Rule 15c6-1 — T+1 Settlement Cycle"
+    applicable_rules:
+      - rule: "Standard settlement of most securities transactions must occur on T+1"
+        how_enforced: "The whole pipeline's time pressure — no role or task in this policy carries slack for manual exception handling; every task_binding below assumes same-trade-date completion"
+  - id: SEC-15C6-2
+    name: "SEC Rule 15c6-2 — Same-Day Affirmation (SDA) Mandate"
+    applicable_rules:
+      - rule: "Institutional trade affirmation must complete same trade-date"
+        how_enforced: "affirmation_matching_agent_policy task_bindings restrict trade_matching/ssi_verification to trade_capture, counterparty_records, and ssi_data only — no pricing or commission data can distract from the affirmation check"
+  - id: DTCC-NSCC-CNS
+    name: "DTCC/NSCC Continuous Net Settlement (CNS)"
+    applicable_rules:
+      - rule: "Firm's netted settlement obligation must be verified against internal books"
+        how_enforced: "settlement_reconciliation_agent_policy task_bindings bind settlement_verification to dtcc_cns_data and internal_position_ledger only; a mismatch here is EQ-005's fails-to-deliver scenario"
+  - id: SEC-15C3-3
+    name: "SEC Rule 15c3-3 — Customer Protection Rule"
+    applicable_rules:
+      - rule: "Client assets and positions must stay segregated, including internally"
+        how_enforced: "allocation_agent_policy denied_sources blocks cross_client_position_data — one client's allocation is never visible to any agent not handling that specific block"
+  - id: REG-SHO
+    name: "Regulation SHO — Locate Requirement"
+    applicable_rules:
+      - rule: "A locate must be obtained before executing (or covering) a short sale / delivery shortfall"
+        how_enforced: "order_intake_agent_policy task_bindings bind short_sale_flagging to security_master; exception_investigation_agent_policy task_bindings bind break_triage to reg_sho_locate_data for the fails-to-deliver escalation path"
+  - id: FINRA-CAT
+    name: "FINRA CAT — Consolidated Audit Trail"
+    applicable_rules:
+      - rule: "Every order event (receipt, route, modify, cancel, execute) reported with timestamps"
+        how_enforced: "compliance_reporting_agent_policy task_bindings restrict audit_compilation to agent_outputs only — the FINRA CAT-style record is compiled from other agents' outputs, never a raw source, mapping directly onto AutoPIL's own tamper-evident audit log"
+  - id: SEC-17A-4
+    name: "SEC Rule 17a-4 — WORM Recordkeeping for Broker-Dealers"
+    applicable_rules:
+      - rule: "Records of investigation and settlement decisions must be tamper-evident"
+        how_enforced: "cryptographic audit chain on every ALLOW/DENY event across all 7 roles, same mechanism every demo in this repo relies on"
+  - id: INFO-BARRIER-MNPI
+    name: "Information Barriers / MNPI Policy"
+    applicable_rules:
+      - rule: "Trading-side agents must not access desk P&L, commission, or other-desk data"
+        how_enforced: "settlement_reconciliation_agent_policy and exception_investigation_agent_policy both list desk_pnl_data and commission_data in denied_sources — grounds the EQ-003 over-scope denial in a real regulatory boundary, not an arbitrary rule"
+  - id: FINRA-5310
+    name: "FINRA Rule 5310 — Best Execution"
+    applicable_rules:
+      - rule: "Obligation to seek best execution when allocating and working a client order"
+        how_enforced: "Contextual reasoning input for allocation_agent's block_allocation/concentration_check tasks — not a hard denial anywhere in this policy"
+
+policies:
+
+  # Trading ops orchestrator — classifies the trigger and routes; no raw trade/
+  # position/settlement data access at all.
+  - name: trading_ops_orchestrator_policy
+    description: "Classifies the incoming trigger (new order / amendment / cancellation / PM rebalance / corporate-action trade) and routes to specialists; orchestration only, no raw source access"
+    agent_role: trading_ops_orchestrator
+    allowed_sources:
+      - case_metadata
+      - agent_outputs
+    denied_sources:
+      - raw_instructions
+      - security_master
+      - client_account_data
+      - client_position_data
+      - investment_restrictions
+      - trade_capture
+      - counterparty_records
+      - ssi_data
+      - dtcc_cns_data
+      - internal_position_ledger
+      - reg_sho_locate_data
+      - share_inventory_data
+      - desk_pnl_data
+      - commission_data
+      - pricing_data
+      - cross_client_position_data
+      - other_client_orders
+      - client_pii
+    allowed_tasks:
+      - trigger_classification
+      - route_investigation
+    denied_tasks:
+      - allocation_decision
+      - settlement_release
+      - trade_execution
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: trigger_classification
+        permitted_sources: [case_metadata]
+      - task: route_investigation
+        permitted_sources: [case_metadata, agent_outputs]
+    session_ttl_minutes: 1440
+
+  # Order intake — parses raw instruction + security master; no client/position/
+  # pricing/commission data. Skipped entirely on the PM-rebalance path (EQ-004).
+  - name: order_intake_agent_policy
+    description: "Parses raw instruction (email/FIX text) and security master reference data into a structured trade ticket; flags potential short-sale status. No client account, position, pricing, or commission data access"
+    agent_role: order_intake_agent
+    allowed_sources:
+      - raw_instructions
+      - security_master
+    denied_sources:
+      - client_account_data
+      - client_position_data
+      - pricing_data
+      - commission_data
+      - cross_client_position_data
+      - dtcc_cns_data
+      - internal_position_ledger
+    allowed_tasks:
+      - order_parsing
+      - short_sale_flagging
+    denied_tasks:
+      - allocation_decision
+      - settlement_release
+      - pricing_decision
+    max_sensitivity: medium
+    require_task_for_sensitivity: medium
+    task_bindings:
+      - task: order_parsing
+        permitted_sources: [raw_instructions]
+      - task: short_sale_flagging
+        permitted_sources: [security_master]
+    session_ttl_minutes: 1440
+
+  # Allocation agent — splits the block across sub-accounts for THIS case only;
+  # denied pricing, commission, other blocks' allocations, and other clients' positions.
+  - name: allocation_agent_policy
+    description: "Splits the order across sub-accounts respecting concentration limits and client restrictions, scoped to accounts in this block only. No pricing, commission, cross-client, or cross-block access"
+    agent_role: allocation_agent
+    allowed_sources:
+      - client_account_data
+      - client_position_data
+      - investment_restrictions
+      - structured_orders
+    denied_sources:
+      - pricing_data
+      - commission_data
+      - cross_client_position_data
+      - raw_instructions
+      - dtcc_cns_data
+      - internal_position_ledger
+    allowed_tasks:
+      - block_allocation
+      - concentration_check
+    denied_tasks:
+      - pricing_decision
+      - settlement_release
+      - trade_execution
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: block_allocation
+        permitted_sources: [client_account_data, client_position_data, structured_orders]
+      - task: concentration_check
+        permitted_sources: [client_position_data, investment_restrictions]
+    session_ttl_minutes: 1440
+
+  # Affirmation matching — internal capture vs. counterparty/custodian + SSI, same
+  # trade-date. A mismatch is a flag, never a unilateral fix.
+  - name: affirmation_matching_agent_policy
+    description: "Matches internal trade capture vs. counterparty/custodian records and standing settlement instructions, same trade-date. No client PII beyond account/SSI reference, pricing, or commission access"
+    agent_role: affirmation_matching_agent
+    allowed_sources:
+      - trade_capture
+      - counterparty_records
+      - ssi_data
+    denied_sources:
+      - client_pii
+      - pricing_data
+      - commission_data
+      - client_account_data
+      - desk_pnl_data
+    allowed_tasks:
+      - trade_matching
+      - ssi_verification
+    denied_tasks:
+      - settlement_release
+      - pricing_decision
+      - trade_execution
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: trade_matching
+        permitted_sources: [trade_capture, counterparty_records]
+      - task: ssi_verification
+        permitted_sources: [ssi_data]
+    session_ttl_minutes: 1440
+
+  # Settlement reconciliation — DTCC/NSCC net obligation vs. internal ledger. Denied
+  # desk P&L/commissions/unrelated client orders.
+  - name: settlement_reconciliation_agent_policy
+    description: "Verifies the firm's net DTCC/NSCC settlement obligation against the internal position ledger. No desk P&L, commission, or unrelated client order access"
+    agent_role: settlement_reconciliation_agent
+    allowed_sources:
+      - dtcc_cns_data
+      - internal_position_ledger
+    denied_sources:
+      - desk_pnl_data
+      - commission_data
+      - other_client_orders
+      - client_account_data
+      - pricing_data
+    allowed_tasks:
+      - settlement_verification
+    denied_tasks:
+      - pricing_decision
+      - trade_execution
+      - allocation_decision
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: settlement_verification
+        permitted_sources: [dtcc_cns_data, internal_position_ledger]
+    session_ttl_minutes: 1440
+
+  # Exception investigation — widest reasoning scope of any role (whatever's relevant
+  # to the specific flagged break), but still denied desk P&L/commission (the
+  # information-barrier boundary) and cannot resolve unilaterally.
+  - name: exception_investigation_agent_policy
+    description: "Triages a flagged break (timing lag, data/SSI error, fails-to-deliver risk, or manipulation-flavored anomaly) using whatever settlement/affirmation data is relevant to that specific break. No desk P&L or commission access — the information-barrier boundary EQ-003 demonstrates"
+    agent_role: exception_investigation_agent
+    allowed_sources:
+      - dtcc_cns_data
+      - internal_position_ledger
+      - ssi_data
+      - trade_capture
+      - counterparty_records
+      - reg_sho_locate_data
+      - share_inventory_data
+    denied_sources:
+      - desk_pnl_data
+      - commission_data
+      - client_account_data
+      - client_pii
+      - pricing_data
+    allowed_tasks:
+      - break_triage
+    denied_tasks:
+      - settlement_release
+      - trade_execution
+      - allocation_decision
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: break_triage
+        permitted_sources: [dtcc_cns_data, internal_position_ledger, ssi_data, trade_capture, counterparty_records, reg_sho_locate_data, share_inventory_data]
+    session_ttl_minutes: 1440
+
+  # Compliance reporting — compiles the FINRA CAT-style audit record from
+  # agent_outputs only; never touches a raw source. Same compiler pattern every
+  # orchestrator/compiler role in this repo uses.
+  - name: compliance_reporting_agent_policy
+    description: "Compiles the FINRA CAT-style audit record from compiled agent outputs only; no raw trade/position/settlement source access"
+    agent_role: compliance_reporting_agent
+    allowed_sources:
+      - agent_outputs
+    denied_sources:
+      - case_metadata
+      - raw_instructions
+      - security_master
+      - client_account_data
+      - client_position_data
+      - investment_restrictions
+      - trade_capture
+      - counterparty_records
+      - ssi_data
+      - dtcc_cns_data
+      - internal_position_ledger
+      - reg_sho_locate_data
+      - share_inventory_data
+      - desk_pnl_data
+      - commission_data
+      - pricing_data
+      - cross_client_position_data
+      - other_client_orders
+      - client_pii
+    allowed_tasks:
+      - audit_compilation
+    denied_tasks:
+      - trade_execution
+      - settlement_release
+      - allocation_decision
+    max_sensitivity: high
+    require_task_for_sensitivity: high
+    task_bindings:
+      - task: audit_compilation
+        permitted_sources: [agent_outputs]
+    session_ttl_minutes: 1440

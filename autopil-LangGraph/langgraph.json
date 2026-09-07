@@ -8,7 +8,8 @@
     "splunk_secops": "./examples/splunk_secops/splunk_secops_demo.py:graph",
     "hospital_revenue_cycle": "./examples/hospital_revenue_cycle/hospital_revenue_cycle_demo.py:graph",
     "care_coordination": "./examples/care_coordination/care_coordination_demo.py:graph",
-    "quality_control": "./examples/quality_control/quality_control_demo.py:graph"
+    "quality_control": "./examples/quality_control/quality_control_demo.py:graph",
+    "trading_desk_ops": "./examples/trading_desk_ops/trading_desk_ops_demo.py:graph"
   },
   "env": ".env"
 }
