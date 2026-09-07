@@ -17,7 +17,7 @@ export const INDUSTRIES: Industry[] = [
     value: "financial_services", label: "Financial Services", company: "Meridian Bank", enabled: true,
     // splunk_secops's mainframe scenarios are core-banking/card-auth/general-ledger
     // workloads, not a distinct vertical, despite living in a security-ops-flavored demo.
-    demos: ["fraud", "client_analysis", "institutional_portfolio_review", "aml_compliance", "splunk_secops"],
+    demos: ["fraud", "client_analysis", "institutional_portfolio_review", "aml_compliance", "splunk_secops", "trading_desk_ops"],
   },
   {
     value: "healthcare", label: "Healthcare", company: "Alden Health Partners", enabled: true,

@@ -16,6 +16,8 @@ import CareCoordinationDescriptionTab from "./demos/care_coordination/Descriptio
 import CareCoordinationExecutionTab from "./demos/care_coordination/ExecutionTab";
 import QualityControlDescriptionTab from "./demos/quality_control/DescriptionTab";
 import QualityControlExecutionTab from "./demos/quality_control/ExecutionTab";
+import TradingDeskOpsDescriptionTab from "./demos/trading_desk_ops/DescriptionTab";
+import TradingDeskOpsExecutionTab from "./demos/trading_desk_ops/ExecutionTab";
 import { INDUSTRIES } from "./industries";
 import { INDUSTRY_ICONS } from "./industryIcons";
 import "./App.css";
@@ -55,7 +57,7 @@ function useTheme() {
   return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))] as const;
 }
 
-type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops" | "hospital_revenue_cycle" | "care_coordination" | "quality_control";
+type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops" | "hospital_revenue_cycle" | "care_coordination" | "quality_control" | "trading_desk_ops";
 type Tab = "description" | "execution";
 
 const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution: ComponentType }> = {
@@ -98,6 +100,11 @@ const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution
     label: "Quality Control",
     Description: QualityControlDescriptionTab,
     Execution: QualityControlExecutionTab,
+  },
+  trading_desk_ops: {
+    label: "Trading Desk Ops",
+    Description: TradingDeskOpsDescriptionTab,
+    Execution: TradingDeskOpsExecutionTab,
   },
 };
 

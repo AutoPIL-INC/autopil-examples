@@ -112,7 +112,10 @@ as a whole.
   domain — designed from scratch, though its `regulations:` metadata-block
   convention was borrowed from `policies/financial_services/
   clearing_settlement.yaml`. Its own module is `trading_desk_ops_data.py`, checked
-  against every existing demo's module names before being added. See its
+  against every existing demo's module names before being added. Has its own
+  standalone `frontend/`, mirroring `quality_control/frontend/`'s structure, and is
+  also wired into the shared `frontend/src/demos/trading_desk_ops/` (see that
+  directory's note below on hand-syncing if either copy ever needs to change). See its
   [DESIGN.md](./examples/trading_desk_ops/DESIGN.md) and
   [README.md](./examples/trading_desk_ops/README.md).
 - `frontend/` — a tenth, **additive** frontend covering every demo from one
@@ -681,8 +684,25 @@ as a whole.
   where it runs) — this is `guard.protect()`'s documented session-lifecycle behavior
   (a session is only "stolen" once it has an existing owner), not a bug in this demo.
   Both verified directly (bypassing the LLM) during development — see DESIGN.md §10.
-- No hosted AutoPIL SaaS trial mode and **no frontend yet** (standalone or wired into
-  the shared multi-demo viewer) — both out of scope for this round, same starting
-  point `quality_control` had in its own initial round; separate follow-up tasks.
+- No hosted AutoPIL SaaS trial mode — out of scope for this round, same starting point
+  `quality_control` had in its own initial round.
+- **Has its own standalone `examples/trading_desk_ops/frontend/`** — same
+  Vite + React + TypeScript structure as `quality_control/frontend/`, minus the
+  MCP/audit-source-choice second interrupt (this demo has only the one disposition
+  interrupt, same as `fraud_investigation`/`aml_compliance`/`quality_control`). Two
+  things this demo's Execution tab handles differently from that template, since the
+  backend itself behaves differently: the orchestrator's classification event renders
+  as a live "ROUTE" decision (never a "FIXED STEP" badge — that badge is specific to
+  `quality_control`'s fixed first step, not applicable here since this classification
+  is genuinely dynamic), with any role the classification determined is not
+  applicable to the trigger (e.g. `order_intake_agent` on EQ-004's PM-rebalance path)
+  rendered as a distinct "skipped" row so EQ-001 and EQ-004 visibly take different
+  paths; and the review panel renders a visibly different tier — a Tier 1
+  (ops-analyst) review gets an accent badge/border, a Tier 2 (compliance-officer)
+  review (the Reg SHO escalation path, EQ-005) gets a red badge/border — with the same
+  non-empty-note-required-on-both-approve-and-override enforcement `quality_control`'s
+  reviewer form established, applied here at both tiers. Also copied into the shared
+  multi-demo `frontend/src/demos/trading_desk_ops/` (see the module immediately above
+  this one for what "keep in sync by hand" means if either one changes later).
 - The audit database `examples/trading_desk_ops/trading_desk_ops_audit.db` is
   disposable — safe to delete between runs.
