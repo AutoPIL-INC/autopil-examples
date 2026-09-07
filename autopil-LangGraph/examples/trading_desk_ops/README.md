@@ -156,6 +156,21 @@ demo's final-role equivalent (`sar_generator_tools()` in `fraud_investigation`,
 Both verified directly (bypassing the LLM, calling the guarded getters with the exact
 same arguments the tools use) during development — see DESIGN.md §10.
 
+## Hosted AutoPIL SaaS trial mode
+
+Runs local-only (embedded `ContextGuard.protect()`) by default. Optional hosted
+AutoPIL SaaS trial mode, same auto-detect (`AUTOPIL_ADMIN_KEY` + `AUTOPIL_EVALUATE_KEY`
+both set) as the other 5 demos with this support — see `trading_desk_ops_saas_guard.py`'s
+module docstring for what's confirmed live (none of this demo's 7 role names matched a
+pre-seeded policy on the shared trial tenant, so `ensure_policy()` creates 7 dedicated
+`demo_tdo_<role>_policy` policies) and DESIGN.md's "Appendix: hosted trial mode" for
+the full writeup. **Known gap, prominent because it's an active local mechanism**:
+`trading_desk_ops.yaml`'s `session_ttl_minutes: 1440` (24-hour cap, set on all 7 roles)
+is not enforceable the same way against the hosted API — confirmed against the real
+OpenAPI schema, which has no `session_ttl_minutes` (or `permitted_agent_ids`/
+`sensitivity_decay`) field at all. Hosted mode is additive, not a replacement for that
+local enforcement.
+
 ## Policy file
 
 `policies/financial_services/trading_desk_ops.yaml` — governs all 7 agents, including a

@@ -116,7 +116,9 @@ as a whole.
   against every existing demo's module names before being added. Has its own
   standalone `frontend/`, mirroring `quality_control/frontend/`'s structure, and is
   also wired into the shared `frontend/src/demos/trading_desk_ops/` (see that
-  directory's note below on hand-syncing if either copy ever needs to change). See its
+  directory's note below on hand-syncing if either copy ever needs to change). Optional
+  hosted SaaS trial mode, added after the initial round (see its DESIGN.md's "Appendix:
+  hosted trial mode" and `trading_desk_ops_saas_guard.py`). See its
   [DESIGN.md](./examples/trading_desk_ops/DESIGN.md) and
   [README.md](./examples/trading_desk_ops/README.md).
 - `frontend/` — a tenth, **additive** frontend covering every demo from one
@@ -685,8 +687,31 @@ as a whole.
   where it runs) — this is `guard.protect()`'s documented session-lifecycle behavior
   (a session is only "stolen" once it has an existing owner), not a bug in this demo.
   Both verified directly (bypassing the LLM) during development — see DESIGN.md §10.
-- No hosted AutoPIL SaaS trial mode — out of scope for this round, same starting point
-  `quality_control` had in its own initial round.
+- **Optional hosted AutoPIL SaaS trial mode**, added after the initial round, same
+  auto-detect/`RemoteContextGuard` design as the other 5 demos — see
+  `trading_desk_ops_saas_guard.py` and DESIGN.md's "Appendix: hosted trial mode". None
+  of this demo's 7 role names matched any pre-seeded policy on the shared trial
+  tenant (confirmed live via `GET /v1/policies`, 112 policies checked, zero matches),
+  same situation `institutional_portfolio_review`/`splunk_secops` hit — so
+  `trading_desk_ops_demo.py` calls `ensure_policy()` to create 7 dedicated
+  `demo_tdo_<role>_policy` policies, translated field-for-field from
+  `trading_desk_ops.yaml` (including folding each regulation's `applicable_rules` into
+  whichever policy its own `how_enforced` text names — `CreatePolicyRequest` now has
+  a `regulations` field, confirmed live against the OpenAPI schema, a genuine schema
+  change from what `institutional_portfolio_review`'s/`splunk_secops`'s own
+  `ensure_policy()` found). `owner_tag="Trading-Desk-Ops-team"` /
+  `owner_team="Meridian Bank"`. Confirmed live: EQ-001 (clean straight-through) and
+  EQ-003 (information-barrier scenario) both ran end-to-end in hosted mode with
+  legitimate calls allowed and over-scope/role-spoofing/session-isolation attempts
+  denied remotely; `GET /v1/audit/sessions/{id}` with the Admin key read both audit
+  trails back correctly. **Known gap, front and center because it's an active local
+  mechanism, not a hypothetical one**: this demo's `trading_desk_ops.yaml` sets
+  `session_ttl_minutes: 1440` (24-hour cap) on all 7 roles — confirmed live against
+  the real OpenAPI schema and an actual returned policy object that
+  `CreatePolicyRequest`/the hosted policy object has no `session_ttl_minutes` (or
+  `permitted_agent_ids`/`sensitivity_decay`) field at all, so that 24-hour cap is
+  **not enforceable the same way remotely** — hosted mode is additive, not a
+  replacement for local enforcement.
 - **Has its own standalone `examples/trading_desk_ops/frontend/`** — same
   Vite + React + TypeScript structure as `quality_control/frontend/`, minus the
   MCP/audit-source-choice second interrupt (this demo has only the one disposition

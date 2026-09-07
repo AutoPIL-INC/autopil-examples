@@ -56,14 +56,16 @@ examples/trading_desk_ops/
 ├── README.md                                       # setup + run instructions
 ├── trading_desk_ops_data.py                        # fixture data — 5 EQ-### scenarios
 ├── trading_desk_ops_demo.py                        # the demo itself
+├── trading_desk_ops_saas_guard.py                  # optional hosted AutoPIL SaaS trial mode
 └── policies/financial_services/
     └── trading_desk_ops.yaml                       # the 7-role AutoPIL policy matrix
 ```
 
-No `saas_guard.py` and no `frontend/` — hosted SaaS trial mode and a live browser
-viewer are both out of scope for this round (see §9), same starting point
-`hospital_revenue_cycle`/`care_coordination`/`quality_control` had before their own
-frontend additions.
+No `frontend/` — a live browser viewer is out of scope for this round (see §9), same
+starting point `hospital_revenue_cycle`/`care_coordination`/`quality_control` had
+before their own frontend additions. `trading_desk_ops_saas_guard.py` (added after the
+initial round) provides optional hosted AutoPIL SaaS trial mode — see the Appendix
+below.
 
 ## 4. Extensible domain registry — only Equities is built
 
@@ -206,8 +208,6 @@ Both #2 and #3 verified directly (bypassing the LLM) — see §11.
 
 ## 9. Out of scope for this round
 
-- **Hosted AutoPIL SaaS trial mode** — same starting point `hospital_revenue_cycle`/
-  `care_coordination`/`quality_control` had before any future hosted-mode addition.
 - **A frontend** (standalone or wired into the shared multi-demo viewer) — this round
   is backend-only by design.
 - **OpenAI Agents SDK variant** and a **pytest suite** — same convention every existing
@@ -339,3 +339,120 @@ No task_bindings/sensitivity-ceiling bug and no fixture-design bug (in the
 reliably by construction, not by luck) was caught in this round; this section exists
 mainly to document that the upfront cross-check (§ above) was actually done, not
 skipped.
+
+## Appendix: hosted trial mode
+
+Added after the initial round (§9 previously listed this as out of scope) — same
+explicit-opt-in pattern as `fraud_investigation`/`client_analysis`/
+`institutional_portfolio_review`/`aml_compliance`/`splunk_secops`. Setting both
+`AUTOPIL_ADMIN_KEY` and `AUTOPIL_EVALUATE_KEY` swaps the local embedded `ContextGuard`
+for `RemoteContextGuard`, calling a real hosted AutoPIL trial tenant
+(`POST /v1/context/evaluate`) instead of evaluating policy locally; either key unset
+falls back to the local, unchanged default. See `trading_desk_ops_saas_guard.py`'s
+module docstring for the full set of confirmed-live facts this section summarizes.
+
+**⚠️ Known hosted-schema gap — read this before treating hosted mode as at-parity with
+local enforcement.** `trading_desk_ops.yaml` sets `session_ttl_minutes: 1440` (24
+hours) on all 7 roles, added in the commit immediately before this one. Confirmed live
+against the real hosted tenant's OpenAPI schema (`GET /openapi.json`) and against an
+actual returned policy object (`GET /v1/policies`) — `CreatePolicyRequest` has no
+`session_ttl_minutes` field, no `permitted_agent_ids` field, and no
+`sensitivity_decay` field, and a policy object read back from the hosted tenant has
+none of those three keys either. **The 24-hour local session cap is not enforceable
+the same way against the hosted API** — a session that would auto-expire locally
+after 24 hours stays evaluable indefinitely against the hosted tenant for as long as
+the bootstrapped `agent_id` stays approved. This demo doesn't use
+`permitted_agent_ids`/`sensitivity_decay` locally, so those two gaps are moot here,
+but `session_ttl_minutes` is a real, active local mechanism this hosted mode does not
+replicate. Do not read hosted mode as replacing or matching local enforcement —
+treat it strictly as additive, a way to exercise the same policy boundaries against a
+real hosted service, not a substitute for the local TTL cap.
+
+**`ensure_policy()` was required, not assumed.** Checked live via `GET /v1/policies`
+(112 policies on the shared trial tenant at verification time): none of this demo's 7
+role names (`trading_ops_orchestrator`, `order_intake_agent`, `allocation_agent`,
+`affirmation_matching_agent`, `settlement_reconciliation_agent`,
+`exception_investigation_agent`, `compliance_reporting_agent`) matched any pre-seeded
+policy's `agent_role` — zero matches for all 7, the same situation
+`institutional_portfolio_review` and `splunk_secops` hit (unlike `fraud_investigation`,
+whose 5 roles matched byte-for-byte, and `aml_compliance`, whose 3 roles were close
+enough to reuse). `trading_desk_ops_saas_guard.py`'s `ensure_policy()` creates 7
+dedicated `demo_tdo_<role>_policy` policies instead, translated field-for-field from
+`trading_desk_ops.yaml` via `hosted_spec_from_local_policy()` — which reads the
+already-parsed policy list from `autopil.policy_engine.PolicyEngine` (the same object
+`trading_desk_ops_demo.py` already builds for `_POLICY_IDS`) rather than re-parsing
+the YAML by hand.
+
+**A genuine schema discovery, not assumed from an earlier demo's check**:
+`CreatePolicyRequest` now has a `regulations` field
+(`[{id, name, applicable_rules}]`) — confirmed against the live OpenAPI schema, and
+absent when `institutional_portfolio_review`'s/`splunk_secops`'s own `ensure_policy()`
+docstrings checked. `hosted_spec_from_local_policy()` takes advantage of this: for
+each of the 7 policies, it filters `trading_desk_ops.yaml`'s top-level `regulations:`
+block down to the `applicable_rules` entries whose own `how_enforced` text names that
+specific policy by name (the YAML already documents this mapping — see §5's table
+above), and passes the filtered list through as real structured data, not just folded
+into the `description` string the way earlier demos' hosted-mode `description` fields
+did before this field existed. `session_ttl_minutes` still isn't representable this
+way (see the gap disclosure above) — a regulation's `applicable_rules`/`how_enforced`
+text is documentation, not an enforcement mechanism the hosted API interprets.
+
+**Ownership naming**: `owner_tag="Trading-Desk-Ops-team"` (the dedup/lookup key —
+`bootstrap_agents()` matches on `agent_role` + this tag to decide whether to reuse an
+existing agent or create a new one; distinct from any other demo's own `owner_tag`,
+since role names can and do repeat across demos over time — see root `CLAUDE.md`'s
+note on the `wealth_advisor` collision `institutional_portfolio_review` hit), matching
+the `-team` suffix convention `institutional_portfolio_review`
+(`Investments-team`)/`splunk_secops` (`SecOps-team`) both use. `owner_team="Meridian
+Bank"` is the human-readable parent organization — this demo's own fixture data is
+already set at Meridian Bank's Trading Unit, so this is just naming the same entity
+consistently in the Agent record.
+
+**Live verification actually run against the real hosted tenant** (base_url
+`https://autopil-api.onrender.com`), not just claimed:
+
+- `bootstrap_agents()` registered all 7 roles as new, approved agents under
+  `owner="Trading-Desk-Ops-team"`, `owner_team="Meridian Bank"`, each explicitly bound
+  to its own `demo_tdo_<role>_policy` (confirmed via `GET /v1/agents?owner=
+  Trading-Desk-Ops-team` afterward — all 7 `status: "approved"`, correct
+  `policy_name` each). No pre-existing agents under that `owner_tag` were found (a
+  fresh registration, not a reuse) — re-running `bootstrap_agents()` immediately
+  afterward found and reused all 7 without creating duplicates, confirming the
+  dedup-by-`(agent_role, owner_tag)` path works.
+- Auto-detection confirmed both directions: both keys present → `RemoteContextGuard`;
+  `AUTOPIL_EVALUATE_KEY` unset → falls back to the local `autopil.guard.ContextGuard`
+  unchanged.
+- **EQ-001 run live end-to-end in hosted mode**: all legitimate calls across all 5
+  specialists + compliance reporting allowed remotely; the real over-scope/
+  role-spoofing attack tools (`get_pricing_data` on `allocation_agent`,
+  `get_subject_settlement_status` role-spoofing, `get_internal_position_ledger` raw
+  bypass on `compliance_reporting_agent`) denied remotely with the correct
+  `role_not_permitted`/source-denied reasons — final disposition **CLEAR TO SETTLE**,
+  Tier 1, matching the local CLI's documented behavior for this case.
+- **EQ-003 run live end-to-end in hosted mode** (the information-barrier scenario):
+  `exception_investigation_agent` didn't reach for the `desk_pnl_data`/
+  `commission_data` over-scope tools on this particular run (expected non-determinism
+  — see the README's own "not guaranteed identical on every run" note), so the
+  denial was verified directly instead, bypassing the LLM, calling
+  `exception_investigation_agent_tools()`'s `get_desk_pnl_data`/`get_commission_data`
+  against the live `RemoteContextGuard`: both denied remotely with `"Source
+  '...' is explicitly denied for role 'exception_investigation_agent'"` — confirming
+  the information-barrier boundary holds against the hosted API, not just locally.
+  The session-isolation attack tool (`get_case_agent_outputs`) *was* exercised live on
+  this run and denied correctly as `session_agent_mismatch`. Final disposition:
+  **INVESTIGATE TIMING LAG — affirmation discrepancy, no settlement risk**, Tier 1,
+  matching the local CLI's documented behavior.
+- **`GET /v1/audit/sessions/{id}` with the Admin key confirmed working** for both live
+  runs above — the printed audit trail for each case (16 events for EQ-001, 23 for
+  EQ-003) was read back entirely through this endpoint, the same Admin-key
+  requirement `fraud_investigation`/`client_analysis`/`institutional_portfolio_review`/
+  `splunk_secops` already documented (an Evaluate-scoped key gets `403 Forbidden`
+  there even though it works fine for `POST /v1/context/evaluate`) —
+  `RemoteContextGuard` here takes both keys for exactly this reason.
+- **`langgraph dev` loads all 9 graphs in this repo cleanly** with
+  `trading_desk_ops_saas_guard.py` alongside the other 4 demos' own uniquely-named
+  `*_saas_guard.py` files — confirmed via a live `langgraph dev` run
+  (`Application started up in 19.064s`, `trading_desk_ops` imported last in the
+  startup log with no `ImportError`/`AttributeError`), ruling out the
+  module-name-collision failure mode root `CLAUDE.md` documents recurring exactly
+  once already across this repo's other hosted-mode demos.

@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Optional, TypedDict
 
 from dotenv import load_dotenv
+import yaml
 
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
@@ -164,9 +165,47 @@ def _register_agents() -> None:
         )
 
 
-_register_agents()
-guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
-                      agent_registry_store=AGENT_REGISTRY_STORE)
+# Hosted AutoPIL SaaS trial mode — opt in by setting both AUTOPIL_ADMIN_KEY and
+# AUTOPIL_EVALUATE_KEY (same explicit-opt-in pattern as the other 5 demos in this repo
+# with hosted-mode support). Verified live against a real trial tenant — see
+# trading_desk_ops_saas_guard.py's module docstring for what's confirmed and the
+# disclosed session_ttl_minutes/permitted_agent_ids/sensitivity_decay gap. Falls back
+# to the embedded, local ContextGuard otherwise.
+_SAAS_MODE = bool(os.getenv("AUTOPIL_ADMIN_KEY")) and bool(os.getenv("AUTOPIL_EVALUATE_KEY"))
+
+if _SAAS_MODE:
+    from trading_desk_ops_saas_guard import RemoteContextGuard, bootstrap_agents, ensure_policy, hosted_spec_from_local_policy
+    _API_URL = os.getenv("AUTOPIL_API_URL", "https://autopil-api.onrender.com")
+    # None of this demo's 7 role names match any pre-seeded policy on the shared trial
+    # tenant (confirmed live via GET /v1/policies — see trading_desk_ops_saas_guard.py's
+    # module docstring) — same situation institutional_portfolio_review/splunk_secops
+    # hit, so dedicated demo_tdo_<role>_policy policies are created here, translated
+    # field-for-field from trading_desk_ops.yaml (via PolicyEngine, which already
+    # parsed it above for _POLICY_IDS) rather than assumed reusable.
+    _SAAS_POLICY_NAME_FOR = lambda role: f"demo_tdo_{role}_policy"
+    _LOCAL_POLICIES = PolicyEngine(str(POLICY_FILE)).policies
+    with open(POLICY_FILE) as _f:
+        _LOCAL_REGULATIONS = yaml.safe_load(_f).get("regulations", [])
+    for _policy in _LOCAL_POLICIES:
+        ensure_policy(
+            _API_URL, os.environ["AUTOPIL_ADMIN_KEY"],
+            name=_SAAS_POLICY_NAME_FOR(_policy["agent_role"]), agent_role=_policy["agent_role"],
+            spec=hosted_spec_from_local_policy(_policy, _LOCAL_REGULATIONS),
+        )
+    # owner_tag is this lookup key (distinct from client_analysis's/institutional_
+    # portfolio_review's own owner_tags, since role names can and do repeat across
+    # demos over time — see root CLAUDE.md); owner_team is the human-readable parent
+    # organization this demo's fixture data is set at (Meridian Bank's Trading Unit).
+    AGENT_IDS.update(bootstrap_agents(
+        _API_URL, os.environ["AUTOPIL_ADMIN_KEY"], roles=list(AGENT_IDS),
+        owner_tag="Trading-Desk-Ops-team", owner_team="Meridian Bank",
+        policy_name_for=_SAAS_POLICY_NAME_FOR,
+    ))
+    guard = RemoteContextGuard(_API_URL, os.environ["AUTOPIL_EVALUATE_KEY"], os.environ["AUTOPIL_ADMIN_KEY"])
+else:
+    _register_agents()
+    guard = ContextGuard(policy_path=str(POLICY_FILE), audit_db=str(AUDIT_DB), tenant_id=TENANT_ID,
+                          agent_registry_store=AGENT_REGISTRY_STORE)
 
 
 def _make_llm(provider: str = ""):
