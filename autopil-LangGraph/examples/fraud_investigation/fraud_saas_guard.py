@@ -176,8 +176,36 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
                 "owner": owner_tag, "owner_team": owner_team, "framework": "langgraph",
                 "policy_name": policy_name_for(role),
             })
-            resp.raise_for_status()
-            agent = resp.json()
+            if resp.status_code == 409:
+                # Real incident, 2026-09-08: fraud_investigation's 5 agents existed on
+                # the shared trial tenant registered under owner="Fraud Operations", not
+                # the owner_tag this code actually queries by ("autopil-langgraph-demos")
+                # -- a stale/manual owner-tag mismatch, not a code bug in the querying
+                # logic itself. The owner-scoped GET above found nothing, so this POST
+                # tried to create a duplicate agent_role and the API correctly rejected
+                # it as a conflict -- but the unhandled exception took down langgraph
+                # dev's ENTIRE startup (every graph in langgraph.json, not just this
+                # one), since module-level bootstrap_agents() calls run at graph-import
+                # time. Recover by searching for the existing agent across ALL owners
+                # (not just owner_tag) and adopting it, self-healing its owner field so
+                # this same mismatch doesn't recur on the next call.
+                all_resp = client.get("/v1/agents", params={"framework": "langgraph"})
+                all_resp.raise_for_status()
+                agent = next((a for a in all_resp.json() if a["agent_role"] == role), None)
+                if agent is None:
+                    raise RuntimeError(
+                        f"AutoPIL API returned 409 creating agent_role={role!r}, but no "
+                        f"existing agent with that role exists under any owner -- a real "
+                        f"conflict, not a stale-owner-tag mismatch. Check the hosted "
+                        f"tenant manually rather than assuming this recovery path covers it."
+                    ) from None
+                if agent.get("owner") != owner_tag:
+                    fix_resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner": owner_tag})
+                    fix_resp.raise_for_status()
+                    agent = fix_resp.json()
+            else:
+                resp.raise_for_status()
+                agent = resp.json()
         elif owner_team is not None and agent.get("owner_team") != owner_team:
             resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner_team": owner_team})
             resp.raise_for_status()
