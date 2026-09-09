@@ -23,8 +23,8 @@ regulations:
   - id: SEC-15C6-1
     name: "SEC Rule 15c6-1 — T+1 Settlement Cycle"
     applicable_rules:
-      - rule: "Standard settlement of most securities transactions must occur on T+1"
-        how_enforced: "The whole pipeline's time pressure — no role or task in this policy carries slack for manual exception handling; every task_binding below assumes same-trade-date completion"
+      - rule: "Standard settlement of most securities transactions must occur on T+1 — since May 2024, this includes corporate and municipal bonds, not just equities; Treasuries were already T+1"
+        how_enforced: "The whole pipeline's time pressure — no role or task in this policy carries slack for manual exception handling; every task_binding below assumes same-trade-date completion. Equities and Fixed Income (corporate/municipal bonds, Treasuries) both settle T+1 under this rule — only agency MBS traded TBA settles on a different, fixed monthly SIFMA calendar instead (see FICC-MBSD-PTN below)"
   - id: SEC-15C6-2
     name: "SEC Rule 15c6-2 — Same-Day Affirmation (SDA) Mandate"
     applicable_rules:
@@ -54,7 +54,7 @@ regulations:
     name: "SEC Rule 17a-4 — WORM Recordkeeping for Broker-Dealers"
     applicable_rules:
       - rule: "Records of investigation and settlement decisions must be tamper-evident"
-        how_enforced: "cryptographic audit chain on every ALLOW/DENY event across all 7 roles, same mechanism every demo in this repo relies on"
+        how_enforced: "cryptographic audit chain on every ALLOW/DENY event across every role in this policy (Equities and Fixed Income alike), same mechanism every demo in this repo relies on"
   - id: INFO-BARRIER-MNPI
     name: "Information Barriers / MNPI Policy"
     applicable_rules:
@@ -66,12 +66,41 @@ regulations:
       - rule: "Obligation to seek best execution when allocating and working a client order"
         how_enforced: "Contextual reasoning input for allocation_agent's block_allocation/concentration_check tasks — not a hard denial anywhere in this policy"
 
+  # ── Fixed Income sub-domain regulations, added second (see TRADING_OPS_ROADMAP.md's
+  #    "Sub-domain 2" section) — same id/name/applicable_rules/how_enforced shape as the
+  #    9 entries above. ────────────────────────────────────────────────────────────────
+  - id: FICC-GSD
+    name: "FICC Government Securities Division (GSD) — Treasury Clearing & Netting"
+    applicable_rules:
+      - rule: "Treasury trades clear and net through FICC's Government Securities Division, verified against internal books"
+        how_enforced: "settlement_reconciliation_agent_policy and exception_investigation_agent_policy task_bindings bind settlement_verification/break_triage to ficc_gsd_data for Treasury net settlement obligations — FI-005's core check, this domain's analogue of DTCC/NSCC CNS above"
+  - id: FICC-MBSD-PTN
+    name: "FICC Mortgage-Backed Securities Division (MBSD) — Pass-Thru Notification (PTN)"
+    applicable_rules:
+      - rule: "Agency MBS traded TBA (To-Be-Announced) must clear a 48-hour Pass-Thru Notification before the fixed monthly SIFMA settlement date — a different clearing corp and settlement calendar than corporate/municipal bonds or Treasuries"
+        how_enforced: "settlement_reconciliation_agent_policy and exception_investigation_agent_policy task_bindings bind to ficc_mbsd_data/pool_notification_data — FI-004's proactive deadline-escalation check, grounded in pool_notification_data.deadline_at_risk and fired BEFORE any fail occurs, not a reactive break investigation"
+  - id: FICC-FAILS-CHARGE
+    name: "FICC Fails Charge Trading Practice"
+    applicable_rules:
+      - rule: "A genuine Treasury or Agency MBS settlement fail triggers FICC's formula-based Fails Charge Trading Practice penalty"
+        how_enforced: "exception_investigation_agent_policy task_bindings bind break_triage to fails_charge_data; decision_node routes any real inventory_shortfall on a fixed-income case where fails_charge_applicable is true to Tier 2 compliance-officer review — FI-005, this domain's own named penalty mechanism in place of Reg SHO (which does not apply to Treasury/Agency MBS settlement at all)"
+  - id: FINRA-TRACE-MSRB-G14
+    name: "FINRA Rule 6730 (TRACE) / MSRB Rule G-14 (RTRS) — Post-Trade Reporting"
+    applicable_rules:
+      - rule: "Corporate and municipal bond trades must be reported within 15 minutes of execution (TRACE for corporates, MSRB RTRS for municipals) — a materially tighter clock than equities' end-of-day FINRA CAT-style compile"
+        how_enforced: "compliance_reporting_agent_policy's trace_compilation task compiles a TRACE/MSRB-RTRS-style near-real-time record for fixed income cases from agent_outputs only — same 'never touches a raw source' compiler pattern as its audit_compilation task for equities, just a different narrative style and a tighter implied clock"
+  - id: DAY-COUNT-CONVENTION
+    name: "Day-Count Convention Standards (Actual/Actual vs. 30/360)"
+    applicable_rules:
+      - rule: "Accrued interest must be computed using the correct day-count convention for the instrument type — Actual/Actual for Treasuries, 30/360 for corporate/municipal bonds and agency MBS"
+        how_enforced: "affirmation_matching_agent_policy and exception_investigation_agent_policy task_bindings bind to day_count_reference — grounds FI-003's cash-break detection in a real reference table, not an LLM's own arithmetic"
+
 policies:
 
-  # Trading ops orchestrator — classifies the trigger and routes; no raw trade/
-  # position/settlement data access at all.
+  # Trading ops orchestrator — classifies the trigger AND the sub-domain (equities vs.
+  # fixed_income) and routes; no raw trade/position/settlement data access at all.
   - name: trading_ops_orchestrator_policy
-    description: "Classifies the incoming trigger (new order / amendment / cancellation / PM rebalance / corporate-action trade) and routes to specialists; orchestration only, no raw source access"
+    description: "Classifies the incoming trigger (new order / amendment / cancellation / PM rebalance / corporate-action trade) and sub-domain (equities / fixed_income) and routes to specialists; orchestration only, no raw source access"
     agent_role: trading_ops_orchestrator
     allowed_sources:
       - case_metadata
@@ -95,6 +124,11 @@ policies:
       - cross_client_position_data
       - other_client_orders
       - client_pii
+      - day_count_reference
+      - ficc_gsd_data
+      - ficc_mbsd_data
+      - pool_notification_data
+      - fails_charge_data
     allowed_tasks:
       - trigger_classification
       - route_investigation
@@ -112,7 +146,9 @@ policies:
     session_ttl_minutes: 1440
 
   # Order intake — parses raw instruction + security master; no client/position/
-  # pricing/commission data. Skipped entirely on the PM-rebalance path (EQ-004).
+  # pricing/commission data. Skipped entirely on the PM-rebalance path (EQ-004). Same
+  # job for Fixed Income (FI-###) — parses the raw FI trade instruction; instrument
+  # classification is instrument_classification_agent's job, not this role's.
   - name: order_intake_agent_policy
     description: "Parses raw instruction (email/FIX text) and security master reference data into a structured trade ticket; flags potential short-sale status. No client account, position, pricing, or commission data access"
     agent_role: order_intake_agent
@@ -127,6 +163,11 @@ policies:
       - cross_client_position_data
       - dtcc_cns_data
       - internal_position_ledger
+      - day_count_reference
+      - ficc_gsd_data
+      - ficc_mbsd_data
+      - pool_notification_data
+      - fails_charge_data
     allowed_tasks:
       - order_parsing
       - short_sale_flagging
@@ -140,6 +181,45 @@ policies:
       - task: order_parsing
         permitted_sources: [raw_instructions]
       - task: short_sale_flagging
+        permitted_sources: [security_master]
+    session_ttl_minutes: 1440
+
+  # Instrument classification — NEW role, Fixed Income only. Resolves instrument type
+  # (Treasury / corporate / municipal / agency MBS-TBA) from CUSIP/security-master
+  # reference data into the correct settlement cycle and day-count convention.
+  # Everything downstream depends on this being right — FI-002 is what happens when
+  # it isn't. Same denial shape as order_intake_agent's — no client account/position/
+  # pricing/commission data — plus the FI-specific downstream-settlement sources this
+  # role's job explicitly does NOT need (it resolves classification from reference
+  # data alone, never queries clearing/netting/penalty sources directly).
+  - name: instrument_classification_agent_policy
+    description: "Resolves a fixed income instrument's type (Treasury / corporate / municipal / agency MBS-TBA) from CUSIP/security-master reference data into its settlement cycle and day-count convention. No client account, position, pricing, or commission data access, and no downstream clearing/netting/penalty source access — classification is grounded in reference data alone"
+    agent_role: instrument_classification_agent
+    allowed_sources:
+      - security_master
+    denied_sources:
+      - client_account_data
+      - client_position_data
+      - pricing_data
+      - commission_data
+      - cross_client_position_data
+      - dtcc_cns_data
+      - internal_position_ledger
+      - day_count_reference
+      - ficc_gsd_data
+      - ficc_mbsd_data
+      - pool_notification_data
+      - fails_charge_data
+    allowed_tasks:
+      - instrument_classification
+    denied_tasks:
+      - allocation_decision
+      - settlement_release
+      - pricing_decision
+    max_sensitivity: low
+    require_task_for_sensitivity: low
+    task_bindings:
+      - task: instrument_classification
         permitted_sources: [security_master]
     session_ttl_minutes: 1440
 
@@ -177,20 +257,28 @@ policies:
     session_ttl_minutes: 1440
 
   # Affirmation matching — internal capture vs. counterparty/custodian + SSI, same
-  # trade-date. A mismatch is a flag, never a unilateral fix.
+  # trade-date. A mismatch is a flag, never a unilateral fix. Extended for Fixed
+  # Income: now also checks day-count/accrued-interest CASH breaks (trade_matching's
+  # permitted_sources grows day_count_reference) — a genuinely distinct break type
+  # from a quantity/SSI mismatch, grounded in FI-003.
   - name: affirmation_matching_agent_policy
-    description: "Matches internal trade capture vs. counterparty/custodian records and standing settlement instructions, same trade-date. No client PII beyond account/SSI reference, pricing, or commission access"
+    description: "Matches internal trade capture vs. counterparty/custodian records and standing settlement instructions, same trade-date; for fixed income, also verifies the settlement amount's day-count convention against reference data to catch accrued-interest cash breaks. No client PII beyond account/SSI reference, pricing, or commission access"
     agent_role: affirmation_matching_agent
     allowed_sources:
       - trade_capture
       - counterparty_records
       - ssi_data
+      - day_count_reference
     denied_sources:
       - client_pii
       - pricing_data
       - commission_data
       - client_account_data
       - desk_pnl_data
+      - ficc_gsd_data
+      - ficc_mbsd_data
+      - pool_notification_data
+      - fails_charge_data
     allowed_tasks:
       - trade_matching
       - ssi_verification
@@ -202,25 +290,35 @@ policies:
     require_task_for_sensitivity: high
     task_bindings:
       - task: trade_matching
-        permitted_sources: [trade_capture, counterparty_records]
+        permitted_sources: [trade_capture, counterparty_records, day_count_reference]
       - task: ssi_verification
         permitted_sources: [ssi_data]
     session_ttl_minutes: 1440
 
   # Settlement reconciliation — DTCC/NSCC net obligation vs. internal ledger. Denied
-  # desk P&L/commissions/unrelated client orders.
+  # desk P&L/commissions/unrelated client orders. Extended for Fixed Income: now also
+  # checks FICC GSD (Treasury) / FICC MBSD (agency MBS TBA) net settlement obligations
+  # and TBA pool-notification deadline status — the clearing corp differs by instrument
+  # type, resolved upstream by instrument_classification_agent. Denied the Fails Charge
+  # penalty calc itself (exception_investigation_agent's job once a real shortfall is
+  # confirmed) and day_count_reference (affirmation's job, not settlement's).
   - name: settlement_reconciliation_agent_policy
-    description: "Verifies the firm's net DTCC/NSCC settlement obligation against the internal position ledger. No desk P&L, commission, or unrelated client order access"
+    description: "Verifies the firm's net settlement obligation (DTCC/NSCC for equities and corporate/municipal bonds, FICC GSD for Treasuries, FICC MBSD for agency MBS TBA) against the internal position ledger, and TBA pool-notification deadline status. No desk P&L, commission, unrelated client order, day-count, or Fails Charge access"
     agent_role: settlement_reconciliation_agent
     allowed_sources:
       - dtcc_cns_data
       - internal_position_ledger
+      - ficc_gsd_data
+      - ficc_mbsd_data
+      - pool_notification_data
     denied_sources:
       - desk_pnl_data
       - commission_data
       - other_client_orders
       - client_account_data
       - pricing_data
+      - day_count_reference
+      - fails_charge_data
     allowed_tasks:
       - settlement_verification
     denied_tasks:
@@ -231,14 +329,19 @@ policies:
     require_task_for_sensitivity: high
     task_bindings:
       - task: settlement_verification
-        permitted_sources: [dtcc_cns_data, internal_position_ledger]
+        permitted_sources: [dtcc_cns_data, internal_position_ledger, ficc_gsd_data, ficc_mbsd_data, pool_notification_data]
     session_ttl_minutes: 1440
 
   # Exception investigation — widest reasoning scope of any role (whatever's relevant
   # to the specific flagged break), but still denied desk P&L/commission (the
-  # information-barrier boundary) and cannot resolve unilaterally.
+  # information-barrier boundary) and cannot resolve unilaterally. Extended for Fixed
+  # Income with the richest triage taxonomy in this demo — a cash break (day-count
+  # mismatch), a TBA pool-notification deadline at risk (proactive, before any fail),
+  # or a genuine Treasury/Agency MBS fails-to-deliver with FICC's named Fails Charge
+  # penalty — alongside its existing equities triage (timing lag, data/SSI error,
+  # fails-to-deliver risk, manipulation-flavored anomaly).
   - name: exception_investigation_agent_policy
-    description: "Triages a flagged break (timing lag, data/SSI error, fails-to-deliver risk, or manipulation-flavored anomaly) using whatever settlement/affirmation data is relevant to that specific break. No desk P&L or commission access — the information-barrier boundary EQ-003 demonstrates"
+    description: "Triages a flagged break using whatever settlement/affirmation data is relevant to that specific break — for equities: timing lag, data/SSI error, fails-to-deliver risk, or manipulation-flavored anomaly; for fixed income: a day-count/accrued-interest cash break, a TBA pool-notification deadline at risk, or a genuine Treasury/Agency MBS fails-to-deliver (FICC Fails Charge). No desk P&L or commission access — the information-barrier boundary EQ-003 demonstrates"
     agent_role: exception_investigation_agent
     allowed_sources:
       - dtcc_cns_data
@@ -248,6 +351,11 @@ policies:
       - counterparty_records
       - reg_sho_locate_data
       - share_inventory_data
+      - day_count_reference
+      - ficc_gsd_data
+      - ficc_mbsd_data
+      - pool_notification_data
+      - fails_charge_data
     denied_sources:
       - desk_pnl_data
       - commission_data
@@ -264,14 +372,17 @@ policies:
     require_task_for_sensitivity: high
     task_bindings:
       - task: break_triage
-        permitted_sources: [dtcc_cns_data, internal_position_ledger, ssi_data, trade_capture, counterparty_records, reg_sho_locate_data, share_inventory_data]
+        permitted_sources: [dtcc_cns_data, internal_position_ledger, ssi_data, trade_capture, counterparty_records, reg_sho_locate_data, share_inventory_data, day_count_reference, ficc_gsd_data, ficc_mbsd_data, pool_notification_data, fails_charge_data]
     session_ttl_minutes: 1440
 
-  # Compliance reporting — compiles the FINRA CAT-style audit record from
-  # agent_outputs only; never touches a raw source. Same compiler pattern every
-  # orchestrator/compiler role in this repo uses.
+  # Compliance reporting — compiles the FINRA CAT-style audit record (equities) or the
+  # TRACE/MSRB-RTRS-style near-real-time record (fixed income) from agent_outputs only;
+  # never touches a raw source, in either domain. Same compiler pattern every
+  # orchestrator/compiler role in this repo uses. Two allowed_tasks, same single
+  # allowed_source — the narrative style and implied reporting clock differ by domain,
+  # the access boundary does not.
   - name: compliance_reporting_agent_policy
-    description: "Compiles the FINRA CAT-style audit record from compiled agent outputs only; no raw trade/position/settlement source access"
+    description: "Compiles the FINRA CAT-style audit record (equities) or the TRACE/MSRB-RTRS-style near-real-time record (fixed income) from compiled agent outputs only; no raw trade/position/settlement source access in either domain"
     agent_role: compliance_reporting_agent
     allowed_sources:
       - agent_outputs
@@ -295,8 +406,14 @@ policies:
       - cross_client_position_data
       - other_client_orders
       - client_pii
+      - day_count_reference
+      - ficc_gsd_data
+      - ficc_mbsd_data
+      - pool_notification_data
+      - fails_charge_data
     allowed_tasks:
       - audit_compilation
+      - trace_compilation
     denied_tasks:
       - trade_execution
       - settlement_release
@@ -305,5 +422,7 @@ policies:
     require_task_for_sensitivity: high
     task_bindings:
       - task: audit_compilation
+        permitted_sources: [agent_outputs]
+      - task: trace_compilation
         permitted_sources: [agent_outputs]
     session_ttl_minutes: 1440

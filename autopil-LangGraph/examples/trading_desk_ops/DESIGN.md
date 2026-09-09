@@ -1,10 +1,12 @@
-# Trading Desk Ops (Equities) Multi-Agent Demo — Design Doc
+# Trading Desk Ops (Equities + Fixed Income) Multi-Agent Demo — Design Doc
 
-Status: implemented — see `trading_desk_ops_demo.py`, `README.md`
+Status: implemented — see `trading_desk_ops_demo.py`, `README.md`. Equities was built
+first; Fixed Income was added second, extending the same graph/policy rather than
+duplicating it (see §4/§5/§6/§12 below for what changed).
 Depends on: real `autopil` package (`autopil[langgraph]>=0.10.0` from PyPI)
 Design source of truth: `/TRADING_OPS_ROADMAP.md` (repo root) — this file supersedes
-that doc's Equities section; the roadmap doc stays authoritative for the remaining
-four sub-domains until they're built.
+that doc's Equities AND Fixed Income sections; the roadmap doc stays authoritative for
+the remaining three sub-domains (FX, Commodities, International) until they're built.
 
 ## 1. Why this demo
 
@@ -67,11 +69,12 @@ before their own frontend additions. `trading_desk_ops_saas_guard.py` (added aft
 initial round) provides optional hosted AutoPIL SaaS trial mode — see the Appendix
 below.
 
-## 4. Extensible domain registry — only Equities is built
+## 4. Extensible domain registry — Equities and Fixed Income are built
 
 `TRADING_DOMAINS` mirrors `institutional_portfolio_review`'s `REVIEW_TYPES` shape:
 one dict, keyed by sub-domain, that a future PR extends without restructuring the
-graph.
+graph. Fixed Income is the first domain to actually exercise this extensibility —
+here's what adding it required and, just as importantly, what it didn't:
 
 ```python
 TRADING_DOMAINS = {
@@ -83,45 +86,102 @@ TRADING_DOMAINS = {
                               "exception_investigation_agent"],
         "first_step_by_trigger": {...},   # trigger_type -> which specialist runs first
         "skip_by_trigger": {...},         # trigger_type -> roles genuinely not applicable
+        "review_guidance": "...",         # orchestrator_review_node's re-routing prompt text
     },
-    # "fx": {...}, "commodities": {...}, "fixed_income": {...}, "international": {...}
+    "fixed_income": {
+        "description": "...",
+        "specialist_roles": ["order_intake_agent", "instrument_classification_agent",
+                              "affirmation_matching_agent",
+                              "settlement_reconciliation_agent",
+                              "exception_investigation_agent"],
+        "first_step_by_trigger": {...},   # no pm_rebalance entry — no PM-rebalance
+                                           # concept in this domain; falls through to
+                                           # specialist_roles[0] via the .get() default
+        "skip_by_trigger": {},            # nothing skipped — every FI-### trigger has
+                                           # raw text to parse
+        "review_guidance": "...",
+    },
+    # "fx": {...}, "commodities": {...}, "international": {...}
     # — not built this round, see TRADING_OPS_ROADMAP.md's pain-scenario menu
 }
 ```
 
-`build_graph()` only wires `TRADING_DOMAINS["equities"]`'s specialists as static
-LangGraph nodes today (LangGraph's conditional edges need statically known node
-names, same constraint `institutional_portfolio_review`'s `_make_role_node` works
-around). Adding FX/Commodities/Fixed Income/International later means adding their own
-`specialist_roles`/routing entries to `TRADING_DOMAINS` and their own node functions —
-not touching `trading_ops_orchestrator_node`'s classification call itself, whose
-`domain` enum already reads off `list(TRADING_DOMAINS.keys())`.
+Fixed Income swaps `allocation_agent` for `instrument_classification_agent` (NEW
+role) in its `specialist_roles` — no FI-### scenario splits a block across
+sub-accounts, and instrument classification has to run before affirmation/settlement
+can check anything meaningful, since it determines the settlement cycle and day-count
+convention themselves, not just the workflow path (see §5).
+
+**What had to change to make a second domain actually work, not just declare one:**
+
+- `orchestrator_review_node`'s `remaining` candidate list was hardcoded to
+  `EQUITIES_SPECIALIST_ROLES` — the very shape this registry exists to avoid. Fixed to
+  read `TRADING_DOMAINS[state["domain"]]["specialist_roles"]` instead, so a Fixed
+  Income case is never offered `allocation_agent` and an Equities case is never
+  offered `instrument_classification_agent`.
+- `orchestrator_review_node`'s re-routing prompt hardcoded Equities' own "normal
+  order" guidance text inline. Pulled into each domain's own `review_guidance` string
+  instead, so the same review node can steer either domain's re-routing without one
+  domain's shape leaking into the other's prompt.
+- `build_graph()` wires `ALL_SPECIALIST_ROLES` — the union of every populated domain's
+  `specialist_roles`, order-preserved and deduped — as static LangGraph nodes/
+  conditional-edge targets (LangGraph needs statically known node names, same
+  constraint `institutional_portfolio_review`'s `_make_role_node` works around). A
+  given case's `route_from_plan`/`route_after_review` only ever return a role that
+  case's own `domain_spec["specialist_roles"]` contains, so the union at the graph
+  level doesn't let a Fixed Income case wander into `allocation_agent` or vice versa —
+  it's a static-node-name requirement, not a runtime relaxation.
+- `_reset_sessions()` was hardcoded to `["trading_ops_orchestrator",
+  *EQUITIES_SPECIALIST_ROLES, "compliance_reporting_agent"]` — switched to iterate
+  `AGENT_IDS` (every registered role, across every domain) so a new domain's roles get
+  fresh sessions automatically instead of needing a second list kept in lockstep.
+
+Adding FX/Commodities/International later means adding their own `specialist_roles`/
+routing/`review_guidance` entries to `TRADING_DOMAINS` and their own node functions —
+not touching `build_graph()`'s edges or `trading_ops_orchestrator_node`'s
+classification call itself, whose `domain` enum already reads off
+`list(TRADING_DOMAINS.keys())`. Confirmed this actually holds, not just asserted it:
+Fixed Income was added without changing a single edge in `build_graph()` beyond
+appending to the union it already wires.
 
 ## 5. Roles and the compliance framework grounding each boundary
 
+Equities' 7 roles, plus `instrument_classification_agent` (NEW, Fixed Income only).
+`allocation_agent` is Equities-only — untouched, and simply not part of Fixed
+Income's `specialist_roles`. Every reused role's `allowed_sources`/`task_bindings`
+grew to cover Fixed Income's new sources where that role's job genuinely extends into
+the new domain — "reuse" here means "extend the policy entry," not "leave untouched,"
+per the build brief this round shipped against.
+
 | Role | Reads | Denied | Notable mechanism |
 |---|---|---|---|
-| `trading_ops_orchestrator` | `case_metadata`, `agent_outputs` | every raw trade/position/settlement source | Genuinely LLM-driven classification of the trigger — not a fixed first step |
-| `order_intake_agent` | `raw_instructions`, `security_master` | client account/position/pricing/commission data | Parses into a structured trade ticket; flags short-sale status. Skipped entirely on the PM-rebalance path |
-| `allocation_agent` | `client_account_data`/`client_position_data` (this block only), `investment_restrictions`, `structured_orders` | pricing, commission, other clients' positions | SEC Rule 15c3-3 boundary — one client's allocation never visible to another |
-| `affirmation_matching_agent` | `trade_capture`, `counterparty_records`, `ssi_data` | client PII beyond account/SSI, pricing, commission | SEC Rule 15c6-2 same-day affirmation; a mismatch is a flag, never a unilateral fix |
-| `settlement_reconciliation_agent` | `dtcc_cns_data`, `internal_position_ledger` | desk P&L, commissions, unrelated client orders | DTCC/NSCC CNS net obligation check — a break here is EQ-005's fails-to-deliver scenario |
-| `exception_investigation_agent` | whatever's relevant to the specific break (widest scope) | desk P&L, commission — information-barrier boundary | Triages the break; proposes a resolution, cannot execute one |
-| `compliance_reporting_agent` | `agent_outputs` only | every raw source | Compiles the FINRA CAT-style audit record — never touches a raw source |
+| `trading_ops_orchestrator` | `case_metadata`, `agent_outputs` | every raw trade/position/settlement source | Genuinely LLM-driven classification of the trigger AND the sub-domain (equities vs. fixed_income) — `domain` was already an LLM-reasoned field in the Equities build (its `classify_trigger` schema always had a `domain` enum reading off `TRADING_DOMAINS.keys()`), not a fixed harness-level selection — so adding Fixed Income required zero changes to this role's decision-making, only removing the "only equities is built today" hint text from its prompt |
+| `order_intake_agent` | `raw_instructions`, `security_master` | client account/position/pricing/commission data | Parses into a structured trade ticket; flags short-sale status. Skipped entirely on the Equities PM-rebalance path. Same job for Fixed Income — parses the raw FI desk-email instruction; instrument classification is `instrument_classification_agent`'s job, not this role's |
+| `instrument_classification_agent` *(NEW, Fixed Income only)* | `security_master` (CUSIP-keyed bond entries) | client account/position/pricing/commission data — same shape as `order_intake_agent`'s denials | Resolves instrument type (Treasury / corporate / municipal / agency MBS-TBA) into the settlement cycle and day-count convention, from CUSIP/security-master reference data alone — FI-002 is what happens when this goes wrong. `max_sensitivity: low` (its only real source, `security_master`, is rated `low`) |
+| `allocation_agent` *(Equities only)* | `client_account_data`/`client_position_data` (this block only), `investment_restrictions`, `structured_orders` | pricing, commission, other clients' positions | SEC Rule 15c3-3 boundary — one client's allocation never visible to another |
+| `affirmation_matching_agent` | `trade_capture`, `counterparty_records`, `ssi_data`, `day_count_reference` | client PII beyond account/SSI, pricing, commission | SEC Rule 15c6-2 same-day affirmation; for fixed income, also verifies the settlement amount's day-count convention to catch accrued-interest CASH breaks (FI-003) — a genuinely different break type from a quantity/SSI mismatch, not a relabeling of the same field. A mismatch is a flag, never a unilateral fix |
+| `settlement_reconciliation_agent` | `dtcc_cns_data`, `internal_position_ledger`, `ficc_gsd_data`, `ficc_mbsd_data`, `pool_notification_data` | desk P&L, commissions, unrelated client orders, day-count reference, Fails Charge calc | DTCC/NSCC CNS net obligation check (equities/corporate/municipal bonds) — a break here is EQ-005's fails-to-deliver scenario. For fixed income, also checks FICC GSD (Treasuries) / FICC MBSD (agency MBS TBA) net settlement and TBA pool-notification deadline status — FI-004's core check |
+| `exception_investigation_agent` | whatever's relevant to the specific break (widest scope) — now including `day_count_reference`/`ficc_gsd_data`/`ficc_mbsd_data`/`pool_notification_data`/`fails_charge_data` | desk P&L, commission — information-barrier boundary | Triages the break; proposes a resolution, cannot execute one. Fixed income gives it the richest triage taxonomy in this demo — a cash break, a pool-notification deadline at risk (proactive, before any fail), or a genuine Treasury/Agency MBS fails-to-deliver under FICC's Fails Charge Trading Practice — alongside its existing equities triage |
+| `compliance_reporting_agent` | `agent_outputs` only | every raw source | Compiles the FINRA CAT-style audit record (equities, `audit_compilation` task) or the TRACE/MSRB-RTRS-style near-real-time record (fixed income, `trace_compilation` task) — never touches a raw source in either domain. Same single allowed_source, two allowed_tasks — the narrative style differs by domain, the access boundary does not |
 
 `policies/financial_services/trading_desk_ops.yaml`'s `regulations:` block maps:
 
 | Regulation / mechanism | Grounds |
 |---|---|
-| SEC Rule 15c6-1 | The whole pipeline's T+1 time pressure |
+| SEC Rule 15c6-1 | The whole pipeline's T+1 time pressure — since May 2024 this also covers corporate/municipal bonds, not just equities (Treasuries were already T+1) |
 | SEC Rule 15c6-2 | `affirmation_matching_agent_policy` task_bindings |
 | DTCC/NSCC CNS | `settlement_reconciliation_agent_policy` task_bindings; EQ-005 |
 | SEC Rule 15c3-3 | `allocation_agent_policy` denied_sources (`cross_client_position_data`) |
-| Reg SHO | `order_intake_agent_policy` short-sale flagging; `exception_investigation_agent_policy`'s `reg_sho_locate_data` binding; EQ-005's Tier 2 escalation |
-| FINRA CAT | `compliance_reporting_agent_policy` task_bindings (`agent_outputs` only) |
+| Reg SHO | `order_intake_agent_policy` short-sale flagging; `exception_investigation_agent_policy`'s `reg_sho_locate_data` binding; EQ-005's Tier 2 escalation. Does NOT apply to fixed income settlement at all — see FICC-FAILS-CHARGE below for that domain's own mechanism |
+| FINRA CAT | `compliance_reporting_agent_policy`'s `audit_compilation` task (equities) |
 | SEC Rule 17a-4 | The cryptographic audit chain itself |
 | Information barriers / MNPI | `settlement_reconciliation_agent_policy`/`exception_investigation_agent_policy` denied_sources (`desk_pnl_data`, `commission_data`) — grounds EQ-003 |
 | FINRA Rule 5310 | Contextual reasoning input for `allocation_agent` — not a hard denial anywhere in this policy |
+| **FICC-GSD** *(Fixed Income)* | `settlement_reconciliation_agent_policy`/`exception_investigation_agent_policy` task_bindings bind to `ficc_gsd_data` — Treasury clearing/netting, FI-005's core check |
+| **FICC-MBSD-PTN** *(Fixed Income)* | Same two roles' task_bindings bind to `ficc_mbsd_data`/`pool_notification_data` — the 48-hour Pass-Thru Notification deadline, FI-004's proactive escalation |
+| **FICC-FAILS-CHARGE** *(Fixed Income)* | `exception_investigation_agent_policy` task_bindings bind to `fails_charge_data`; `decision_node` routes a real Treasury/Agency MBS shortfall with `fails_charge_applicable` to Tier 2 — FI-005, this domain's own named penalty mechanism in place of Reg SHO |
+| **FINRA-TRACE-MSRB-G14** *(Fixed Income)* | `compliance_reporting_agent_policy`'s `trace_compilation` task — a materially tighter (15-minute) reporting clock than equities' end-of-day CAT-style compile |
+| **DAY-COUNT-CONVENTION** *(Fixed Income)* | `affirmation_matching_agent_policy`/`exception_investigation_agent_policy` task_bindings bind to `day_count_reference` — grounds FI-003's cash-break detection in a real reference table, not an LLM's own arithmetic |
 
 ## 6. Scenarios (`trading_desk_ops_data.py`)
 
@@ -162,6 +222,69 @@ not touching `trading_ops_orchestrator_node`'s classification call itself, whose
   **Tier 2 (compliance-officer) review** — the highest severity of the five, and the
   scenario that actually exercises the Reg SHO locate-requirement path.
 
+### 6a. Fixed Income scenarios (`FI-###`, `trading_desk_ops_data.py`)
+
+Five instruments, each exercising a distinct mechanism this sub-domain introduces:
+
+- **FI-001 — Clean straight-through (corporate bond).** Apple Inc. 4.000% Notes due
+  2033 (CUSIP `037833EY2`), $5,000,000 face. Correctly classified as `corporate` via
+  CUSIP lookup, correct 30/360 accrued-interest calculation
+  (`TRADE_CAPTURE`/`COUNTERPARTY_RECORDS` settlement amounts match exactly), clean
+  affirmation, clean DTCC settlement match. `orchestrator_review_node` routes straight
+  to `compliance_reporting_agent` once `settlement_reconciliation_agent` confirms a
+  clean match. **Tier 1.**
+- **FI-002 — Instrument misclassification risk.** An FNMA ticket the desk describes
+  as "a Fannie Mae note, standard T+1 settlement" (CUSIP `01F052658`) — `SECURITY_MASTER`
+  resolves it as an Agency MBS TBA pool instead: `instrument_type: agency_mbs_tba`,
+  `clearing_corp: FICC_MBSD`, `settlement_cycle: sifma_monthly`, not the T+1/DTCC path
+  the ticket's own description implies. `instrument_classification_agent` must resolve
+  this from `get_security_master`'s CUSIP lookup, not the ticket's prose — getting it
+  wrong would compute an actually wrong settlement date and route settlement checks to
+  `dtcc_cns_data` instead of `ficc_mbsd_data` (which carries an explicit `applicable:
+  False` stub for FI-002, precisely to make a wrong reach visible rather than silently
+  returning the wrong cross-case table — see `trading_desk_ops_data.py`'s module
+  docstring). **Tier 1.**
+- **FI-003 — Day-count / accrued-interest cash break (genuinely distinct from a
+  quantity/SSI break).** US Treasury Note 4.125% due 2031 (CUSIP `91282CJP6`),
+  $10,000,000 face. `TRADE_CAPTURE["FI-003"]` computed the settlement amount using
+  30/360 (`day_count_convention_used: "30/360"`) — wrong for a Treasury, which uses
+  Actual/Actual per `DAY_COUNT_REFERENCE["treasury"]`.
+  `COUNTERPARTY_RECORDS["FI-003"]` shows the correctly-computed amount under
+  Actual/Actual. Quantity (10,000,000 face) and price (99.500) both match exactly in
+  both records — only `settlement_amount` differs, by $551.26.
+  `AFFIRMATION_RESULTS["FI-003"].break_type == "cash_break"`, a distinct string value
+  from EQ-002's `"ssi_error"` and EQ-003's `"timing_lag"` — checked directly (see §11)
+  to confirm this isn't a relabeled quantity/SSI field. **Tier 1.**
+- **FI-004 — TBA MBS pool-notification deadline at risk (proactive escalation, not a
+  reactive break).** FNMA 30-Year TBA, 5.500% coupon, September 2026 settlement class
+  (CUSIP `01F055623`), $3,000,000 face.
+  `POOL_NOTIFICATION_DATA["FI-004"].deadline_at_risk == True` with `hours_remaining:
+  6.5` against the 48-hour Pass-Thru Notification cutoff — nothing has failed;
+  affirmation is clean (`AFFIRMATION_RESULTS["FI-004"]` shows `MATCHED`/`None`) and
+  `INTERNAL_POSITION_LEDGER["FI-004"].inventory_shortfall == 0`. `decision_node`
+  checks `pool_notification.get("deadline_at_risk")` BEFORE checking `break_type` at
+  all, so this fires purely off the deadline signal, never off a break that already
+  happened. **Tier 1.**
+- **FI-005 — Genuine Treasury fails-to-deliver, FICC Fails Charge Trading Practice
+  (Tier 2, highest severity).** US Treasury Note 3.875% due 2030 (CUSIP `91282CHT8`),
+  $10,000,000 face. `INTERNAL_POSITION_LEDGER["FI-005"]` shows the firm holding only
+  $6,000,000 of the $10,000,000 face it owes FICC GSD (`inventory_shortfall:
+  4000000`) — this domain's analogue of EQ-005's DTCC/NSCC shortfall, but the escalation
+  mechanism is genuinely different: `FAILS_CHARGE_DATA["FI-005"].fails_charge_applicable
+  == True` (not Reg SHO — `REG_SHO_LOCATE_DATA` carries an explicit "not applicable to
+  fixed income settlement" stub for every FI-### case). `decision_node` checks
+  `fails_charge.get("fails_charge_applicable")` to pick the Fails-Charge-flavored
+  proposed action text over the Reg SHO one, still on the same
+  `inventory_shortfall > 0 → Tier 2` branch EQ-005 established. **Tier 2 —
+  compliance-officer review**, the only one of the five FI cases (and, across both
+  domains, one of two total) routed there.
+
+Every FI-### severity signal is grounded in a real fixture field exactly the same way
+EQ-### is — `INTERNAL_POSITION_LEDGER.inventory_shortfall`,
+`POOL_NOTIFICATION_DATA.deadline_at_risk`, `AFFIRMATION_RESULTS.break_type`,
+`FAILS_CHARGE_DATA.fails_charge_applicable` — never a role's self-report, never a
+case_id → tier lookup. See §11a for live verification.
+
 ## 7. Two-tier human review — design
 
 `decision_node` computes severity directly from raw fixture fields — never from any
@@ -169,26 +292,43 @@ role's self-reported finding, and never from a `case_id -> tier` lookup table:
 
 ```python
 if ledger.get("inventory_shortfall", 0) > 0:
-    tier = "tier2_compliance_officer"          # EQ-005
+    tier = "tier2_compliance_officer"          # EQ-005, FI-005
+    # Fixed income names FICC's Fails Charge Trading Practice instead of Reg SHO —
+    # picked by fails_charge.get("fails_charge_applicable"), same tier either way.
+elif pool_notification.get("deadline_at_risk"):
+    tier = "tier1_ops_analyst"                 # FI-004 — proactive, before any fail
+elif affirmation.get("break_type") == "cash_break":
+    tier = "tier1_ops_analyst"                 # FI-003 — a distinct break TYPE
 elif affirmation.get("break_type") == "ssi_error":
     tier = "tier1_ops_analyst"                 # EQ-002
 elif affirmation.get("break_type") == "timing_lag":
     tier = "tier1_ops_analyst"                 # EQ-003
 else:
-    tier = "tier1_ops_analyst"                 # EQ-001, EQ-004 — routine sign-off
+    tier = "tier1_ops_analyst"                 # EQ-001, EQ-004, FI-001, FI-002 — routine sign-off
 ```
 
-`ledger` and `affirmation` come from `data.INTERNAL_POSITION_LEDGER`/
-`data.AFFIRMATION_RESULTS` — the same raw sources `settlement_reconciliation_agent`/
-`affirmation_matching_agent` themselves read, computed once in the fixture data, not
-derived from an agent's narrative. The `interrupt()` payload carries `tier`/
-`tier_label` explicitly (`"tier1_ops_analyst"` / `"tier2_compliance_officer"`, with a
-human-readable label) so a future frontend can render a different reviewer form per
-tier. A written note is required on **both** approve and override, on **both** tiers —
-`decision_node` loops on `interrupt()` until a non-empty `notes` field comes back on
-the resume payload, the same confirmed-effective UX choice `quality_control`'s
-`decision_node` established for one tier (see its own docstring), applied here across
-two.
+`ledger`/`affirmation`/`pool_notification`/`fails_charge` come from
+`data.INTERNAL_POSITION_LEDGER`/`data.AFFIRMATION_RESULTS`/
+`data.POOL_NOTIFICATION_DATA`/`data.FAILS_CHARGE_DATA` — the same raw sources
+`settlement_reconciliation_agent`/`affirmation_matching_agent`/
+`exception_investigation_agent` themselves read, computed once in the fixture data,
+not derived from an agent's narrative. Fixed Income added two new checks
+(`pool_notification`/`fails_charge`) without touching the shape of this function — one
+more `elif` branch each, same `tier`/`proposed_action` pattern the Equities branches
+already established. The `interrupt()` payload carries `tier`/`tier_label` explicitly
+(`"tier1_ops_analyst"` / `"tier2_compliance_officer"`, with a human-readable label) so
+a future frontend can render a different reviewer form per tier — `tier2_compliance_officer`'s
+label now reads "Reg SHO / FICC Fails Charge escalation" to reflect both domains'
+mechanisms landing on the same tier. A written note is required on **both** approve
+and override, on **both** tiers — `decision_node` loops on `interrupt()` until a
+non-empty `notes` field comes back on the resume payload, the same confirmed-effective
+UX choice `quality_control`'s `decision_node` established for one tier (see its own
+docstring), applied here across two.
+
+**Confirmed live (not assumed) that FI-005 is the only Fixed Income case reaching
+Tier 2** — see §11a. FI-001/002/003/004 all resolve to Tier 1, driven by the absence
+of a real `inventory_shortfall` on those four cases' `INTERNAL_POSITION_LEDGER`
+entries, not by an assumption that Fixed Income mirrors Equities' exact tier split.
 
 ## 8. Attack-surface tools on `compliance_reporting_agent`
 
@@ -204,15 +344,18 @@ two.
    (`tdo-compliance-001`) but claims `agent_role="settlement_reconciliation_agent"` to
    reach `dtcc_cns_data`, a source that role's policy genuinely allows.
 
-Both #2 and #3 verified directly (bypassing the LLM) — see §11.
+Both #2 and #3 verified directly (bypassing the LLM) — see §11. This tool set is
+domain-agnostic (it targets `compliance_reporting_agent`'s own policy boundary, not
+any Equities- or Fixed-Income-specific source), and was re-verified directly against
+Fixed Income cases too, after Fixed Income was added — see §11a.
 
 ## 9. Out of scope for this round
 
 - **A frontend** (standalone or wired into the shared multi-demo viewer) — this round
-  is backend-only by design.
+  is backend-only by design, for both Equities and Fixed Income.
 - **OpenAI Agents SDK variant** and a **pytest suite** — same convention every existing
   demo in this repo follows.
-- **The other 4 sub-domains** (FX, Commodities, Fixed Income, International) named in
+- **The other 3 sub-domains** (FX, Commodities, International) named in
   `TRADING_OPS_ROADMAP.md` — `TRADING_DOMAINS` is shaped to add them later (§4), but
   none is built this round.
 
@@ -339,6 +482,160 @@ No task_bindings/sensitivity-ceiling bug and no fixture-design bug (in the
 reliably by construction, not by luck) was caught in this round; this section exists
 mainly to document that the upfront cross-check (§ above) was actually done, not
 skipped.
+
+## 11a. Fixed Income verification notes
+
+Live-tested via the CLI path (`ANTHROPIC_API_KEY`, Claude) across all 5 FI-### cases,
+back to back with all 5 EQ-### cases in the same unattended run (`python
+trading_desk_ops_demo.py`, local `ContextGuard` mode — `AUTOPIL_ADMIN_KEY`/
+`AUTOPIL_EVALUATE_KEY` unset), exit code 0.
+
+- **EQ-001 through EQ-005 (regression check) all reached the exact same dispositions
+  documented in §11** — CLEAR TO SETTLE (EQ-001), CORRECT SSI & REPROCESS (EQ-002),
+  INVESTIGATE TIMING LAG (EQ-003), CLEAR TO SETTLE via the PM-rebalance path with
+  `order_intake_agent` skipped (EQ-004), ESCALATE — FAILS-TO-DELIVER RISK at Tier 2
+  (EQ-005). Confirms the Fixed Income extension did not regress the Equities domain
+  despite editing every shared role's policy entry and the shared graph.
+- **FI-001** — `trading_ops_orchestrator` classified `domain=fixed_income,
+  trigger_type=new_order` correctly from the trigger brief alone (no domain hint
+  needed beyond the CUSIP/bond description). `instrument_classification_agent`
+  resolved CUSIP `037833EY2` to `corporate`/DTCC/T+1/30-360; affirmation and
+  settlement both clean. Final disposition **CLEAR TO SETTLE — clean
+  straight-through processing, no exception**, Tier 1.
+- **FI-002** — confirmed the misclassification-risk story fires as designed:
+  `order_intake_agent` itself flagged the desk's "Fannie Mae note, standard T+1"
+  description as unverified against security master before
+  `instrument_classification_agent` even ran; `instrument_classification_agent` then
+  resolved CUSIP `01F052658` to `agency_mbs_tba`, clearing `FICC_MBSD`, settling on
+  the SIFMA monthly date — contradicting the ticket's own T+1 assumption.
+  `orchestrator_review_node`'s own reasoning explicitly named this contradiction when
+  routing. Affirmation and settlement both clean once correctly classified. Final
+  disposition **CLEAR TO SETTLE**, Tier 1.
+- **FI-003** — confirmed live that the break is typed as a genuinely distinct CASH
+  break, not a relabeled quantity/SSI break: `affirmation_matching_agent` called
+  `get_day_count_reference(treasury)` and compared it against
+  `trade_capture.day_count_convention_used` ("30/360", wrong for a Treasury);
+  `AFFIRMATION_RESULTS["FI-003"].break_type == "cash_break"` (a string value that
+  exists nowhere in the Equities break vocabulary — `"ssi_error"`/`"timing_lag"`).
+  Final disposition **CORRECT DAY-COUNT & REPROCESS — accrued-interest cash break
+  confirmed**, Tier 1 — matching `get_expected_outcome("FI-003")`'s
+  `expected_break_type: "cash_break"` exactly.
+- **FI-004** — confirmed live that the escalation is genuinely proactive, firing
+  BEFORE any fail: `settlement_reconciliation_agent` read `pool_notification_data`
+  and surfaced `deadline_at_risk` (6.5 hours remaining against the 48-hour PTN
+  cutoff) with **no settlement shortfall anywhere in the case**
+  (`internal_position_ledger.inventory_shortfall == 0`, affirmation clean) —
+  `orchestrator_review_node`'s own routing reasoning named the deadline risk
+  explicitly as the reason to route to `exception_investigation_agent`, not a break.
+  Final disposition **ESCALATE POOL NOTIFICATION — confirm PTN before the 48-hour
+  SIFMA cutoff**, Tier 1 — matching `expected_break_type:
+  "pool_notification_deadline_risk"`.
+- **FI-005** — `settlement_reconciliation_agent` surfaced the real
+  `internal_position_ledger.inventory_shortfall == 4000000` against the
+  `ficc_gsd_data` net obligation; was denied on `get_fails_charge_data` (`"Source
+  'fails_charge_data' is explicitly denied for role
+  'settlement_reconciliation_agent'"` — the penalty-calc boundary firing exactly as
+  designed); `exception_investigation_agent` then picked up `fails_charge_data`
+  (`fails_charge_applicable: True`) and confirmed the Fails Charge exposure. Final
+  disposition **ESCALATE — TREASURY FAILS-TO-DELIVER: FICC Fails Charge applies,
+  obtain funding/borrow before settlement**, **Tier 2** — the only Fixed Income case
+  reaching that tier, confirmed to follow directly from `inventory_shortfall > 0` +
+  `fails_charge_applicable`, not from `case_id == "FI-005"` being checked anywhere in
+  `decision_node`.
+- **Confirmed FI-001/002/003/004 all route to Tier 1 and FI-005 alone routes to
+  Tier 2** — not assumed to mirror Equities' exact split, verified against each
+  case's own `interrupt()` payload `tier` field.
+
+**Every case's full AutoPIL audit trail was inspected for unintended denials** — the
+requirement that no role is ever denied on a legitimate call due to a
+task_bindings/sensitivity-ceiling mismatch. Across all 10 cases (EQ + FI), every
+single denial matches an intentional over-scope/attack-surface tool
+(`get_pricing_data`, `get_client_account_data`, `get_desk_pnl_data`,
+`get_commission_data`, `get_fails_charge_data` on `settlement_reconciliation_agent`,
+`get_subject_settlement_status` role-spoofing, `get_internal_position_ledger` raw
+bypass, `get_case_agent_outputs` session isolation) — zero denials on any
+legitimately-authorized `(source, task_type)` pair for any role in either domain.
+FI-005 in particular exercises the new `fails_charge_data` over-scope boundary on
+`settlement_reconciliation_agent` live, not just as a directly-called check (see below).
+
+**Attack-surface tools re-verified directly (bypassing the LLM) against a Fixed
+Income case**, confirming the mechanism is genuinely domain-agnostic, not
+Equities-specific: called `compliance_report_tools("FI-003", "fixed_income")`'s
+`get_subject_settlement_status` (denied `role_not_permitted`, identical reason text
+to the Equities case) and `get_internal_position_ledger` (denied, source explicitly
+denied) directly. For session isolation, confirmed the same precondition documented
+in §11 holds for Fixed Income too: `get_case_agent_outputs` against FI-003 returns
+`allowed` before `exception_investigation_agent`'s own session has a real prior call
+under it (first use, not a stolen session), then denies as `cross_agent_isolation`
+once a genuine `exception_investigation_agent`-authorized call establishes that
+session first — identical behavior, identical reason-string shape, to the documented
+Equities case.
+
+**A minor observation, not a bug (nothing broke, no denial or disposition was
+affected)**: on FI-005, `exception_investigation_agent` called
+`get_day_count_reference` with `key="FI-005"` instead of an instrument_type string
+(e.g. `"treasury"`) — `DAY_COUNT_REFERENCE` has no `"FI-005"` key, so
+`table.get(key, table)` fell back to returning the whole reference table rather than
+just the Treasury entry. The call was still `ALLOW` (day_count_reference is a
+genuinely authorized source for this role/task), and `decision_node`'s disposition is
+grounded in `data.AFFIRMATION_RESULTS`/`data.FAILS_CHARGE_DATA` directly, never in
+this role's own tool-call arguments, so the final outcome was unaffected. Noted here
+in case a future prompt tweak wants to steer the model more precisely toward keying
+this lookup by instrument_type — not fixed in this round since it caused no
+functional or governance issue.
+
+**`langgraph dev`-equivalent load check re-run after adding Fixed Income**: a
+standalone same-process import of all 9 demo graphs (including `trading_desk_ops`,
+which now has 8 roles and 2 domains) succeeded with no `ImportError`/`AttributeError`,
+ruling out the module-name-collision failure mode — no new per-demo module was added
+for Fixed Income (it extends the existing `trading_desk_ops_data.py`/
+`trading_desk_ops_demo.py`/`trading_desk_ops.yaml`, not new files), so there was
+nothing new to collide.
+
+**Hosted AutoPIL SaaS trial mode has since been fully re-verified live for Fixed
+Income too, after two real bugs surfaced and were fixed** (not deferred — both are
+now resolved, see `trading_desk_ops_saas_guard.py`'s module docstring for the full
+detail):
+
+1. **A stale owner-tag mismatch, same class of bug that separately hit
+   `fraud_investigation` the same day.** This demo's 7 original (Equities) agents
+   were registered under `owner="Trading-Desk-Ops"`, missing the `-team` suffix
+   `trading_desk_ops_demo.py` actually queries by (`owner_tag="Trading-Desk-Ops-team"`).
+   The owner-scoped GET in `bootstrap_agents()` found nothing, so it tried to
+   re-create every role and got `409 Conflict` on all 7 — bringing down `langgraph
+   dev`'s entire startup (every graph in `langgraph.json`, not just this one), since
+   module-level `bootstrap_agents()` calls run at graph-import time. Fixed two ways:
+   the 7 mismatched agents' `owner` field was repaired directly on the hosted tenant,
+   and `bootstrap_agents()` itself now recovers from a 409 by searching across all
+   owners and self-healing the mismatch, so this can't recur silently.
+2. **`ensure_policy()` was create-only, so 4 of this demo's policies had gone stale
+   on the hosted tenant.** The Fixed Income extension added `day_count_reference` to
+   `affirmation_matching_agent`'s `trade_matching` task, `trace_compilation` to
+   `compliance_reporting_agent`'s allowed tasks, and several FICC/pool-notification/
+   fails-charge sources to `settlement_reconciliation_agent`'s and
+   `exception_investigation_agent`'s task bindings — none of it reached the hosted
+   tenant, since those 4 policies were already created back when this demo only had
+   Equities, and `ensure_policy()` left existing policies untouched no matter how far
+   local YAML had since diverged. Running the full 10-case suite in hosted mode
+   surfaced exactly this: legitimate FI-### tool calls denied with reasons like "Task
+   'trade_matching' is not permitted to access source 'day_count_reference'" that the
+   local policy explicitly grants. Every case's final disposition still came out
+   correct regardless (`decision_node` is grounded in raw fixture data, never a
+   role's own tool-call success), but the denials were real and needless. Fixed by
+   making `ensure_policy()` diff an existing policy's content against the current
+   local spec and `PUT` an update when they've drifted, not just check for a name
+   match — then immediately re-ran it to refresh all 4 stale policies, confirmed live
+   via `GET /v1/policies` that each now carries the correct content.
+
+**Full 10-case suite (EQ-001..005 + FI-001..005) re-run end-to-end in hosted mode
+after both fixes**, `python trading_desk_ops_demo.py` with both `AUTOPIL_ADMIN_KEY`/
+`AUTOPIL_EVALUATE_KEY` set, exit code 0. Every single case reached the exact same
+disposition and tier documented in §11/§11a above for local mode — including
+`instrument_classification_agent`'s first-ever hosted registration (a genuinely new
+role, no prior record to conflict with) succeeding cleanly, EQ-004's `order_intake_agent`
+skip confirmed live under hosted mode too, and EQ-005/FI-005's Tier 2 escalations both
+firing correctly. This is real parity between local and hosted enforcement for
+everything except the already-disclosed `session_ttl_minutes` gap below.
 
 ## Appendix: hosted trial mode
 

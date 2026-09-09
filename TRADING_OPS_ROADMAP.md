@@ -1,9 +1,12 @@
 # Trading Desk Ops — Planning Doc
 
-**Status: Equities built and merged** (`examples/trading_desk_ops/`, PR #5 — backend,
-frontend, and hosted SaaS trial mode all live). Its full design detail now lives in
-that example's own `DESIGN.md`, not here — see the short pointer below instead of a
-duplicate. **Fixed Income is next, sketched in full below, not yet built.** FX,
+**Status: Equities and Fixed Income built** (`examples/trading_desk_ops/`). Equities:
+backend, frontend, and hosted SaaS trial mode all live (PR #5). Fixed Income: backend
+only so far (extending the same graph/policy, not a new example) — frontend and
+hosted-mode coverage for it are a separate follow-up task. Both sub-domains' full
+design detail now lives in that example's own `DESIGN.md`, not here — see the short
+pointer below instead of a duplicate; the "Sub-domain 2 (next build)" section below is
+kept as the original build sketch, superseded by `DESIGN.md` now that it's built. FX,
 Commodities, and International remain at the pain-scenario-menu level until it's
 their turn.
 

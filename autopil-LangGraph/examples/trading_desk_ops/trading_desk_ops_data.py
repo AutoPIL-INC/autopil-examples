@@ -1,8 +1,10 @@
 """
-Fixture data for the trading_desk_ops demo — Meridian Bank's Trading Unit, Equities
-sub-domain. No live OMS/EMS, custodian, or DTCC/NSCC feed is involved anywhere; every
-guarded getter in trading_desk_ops_demo.py reads from the tables below, exactly like
-every other demo in this repo.
+Fixture data for the trading_desk_ops demo — Meridian Bank's Trading Unit. Covers both
+the Equities sub-domain (EQ-###) and the Fixed Income sub-domain (FI-###, added second
+— see TRADING_OPS_ROADMAP.md's "Sub-domain 2" section for the design source of truth).
+No live OMS/EMS, custodian, DTCC/NSCC, or FICC feed is involved anywhere; every guarded
+getter in trading_desk_ops_demo.py reads from the tables below, exactly like every
+other demo in this repo.
 
 Module name check: `trading_desk_ops_data.py` was checked against every existing
 demo's data-module filename before being added (see root CLAUDE.md's
@@ -10,6 +12,38 @@ module-name-collision note) — no collision:
     aml_case_data.py, care_coordination_data.py, simulated_uc_data.py,
     simulated_data.py, hospital_revenue_cycle_data.py, portfolio_review_uc_data.py,
     quality_control_data.py, splunk_secops_data.py
+
+Fixed Income design notes (see the bottom half of this file, after the Equities
+section, for the FI-### fixtures themselves):
+
+- Sources are EXTENDED, not duplicated, wherever the schema is a natural fit —
+  `SECURITY_MASTER` grows CUSIP-keyed bond entries alongside its existing ticker-keyed
+  equity entries (same dict, same getter, no new source); `TRADE_CAPTURE`/
+  `COUNTERPARTY_RECORDS`/`SSI_DATA`/`AFFIRMATION_RESULTS`/`DTCC_CNS_DATA`/
+  `INTERNAL_POSITION_LEDGER`/`REG_SHO_LOCATE_DATA`/`SHARE_INVENTORY_DATA` all grow
+  FI-### keys the same way. `INTERNAL_POSITION_LEDGER`'s field names
+  (`shares_required`/`shares_available_for_delivery`) are reused verbatim for FI-005's
+  Treasury face-value shortfall — read as dollars of face value for FI cases, shares
+  for EQ cases; same schema, no fork.
+- Five genuinely new sources are added because no existing schema fits: `DAY_COUNT_REFERENCE`
+  (the Actual/Actual vs. 30/360 lookup table), `FICC_GSD_DATA` (Treasury clearing/netting,
+  FI's analogue of `DTCC_CNS_DATA`), `FICC_MBSD_DATA` (agency MBS TBA clearing),
+  `POOL_NOTIFICATION_DATA` (the 48-hour PTN deadline tracker), and `FAILS_CHARGE_DATA`
+  (FICC's Fails Charge Trading Practice penalty calc). No `cusip_reference_data` or
+  `trace_reporting_data`/`msrb_rtrs_data` source was added — the former is folded into
+  `SECURITY_MASTER` per above, and the latter was never wired to an actual tool
+  (`compliance_reporting_agent` still reads `agent_outputs` only for both domains — see
+  its policy entry's own note).
+- Sources an instrument doesn't clear through (e.g. `DTCC_CNS_DATA` for an FI-002/FI-004
+  agency-MBS-TBA case, which clears via FICC MBSD instead) get an explicit
+  `{"applicable": False, "note": "..."}` stub entry rather than being omitted — every
+  getter here falls back to returning the WHOLE table when a key is missing
+  (`table.get(key, table)`, the same quirk the Equities build already lives with), so an
+  omitted key would leak the entire cross-case table into a legitimate read instead of
+  giving a clean "not applicable" signal. Same treatment for `REG_SHO_LOCATE_DATA`/
+  `SHARE_INVENTORY_DATA` on every FI-### case (Reg SHO's locate requirement is an
+  equity-short-sale mechanism, not a fixed-income one — FI-005's genuine delivery
+  shortfall is governed by the Fails Charge Trading Practice instead, `FAILS_CHARGE_DATA`).
 
 Five scenarios, each a distinct blue-chip name — EQ-001 MSFT, EQ-002 NVDA, EQ-003 AAPL,
 EQ-004 AMZN, EQ-005 GOOG — all a 10,000-share (or, for EQ-004, a smaller PM-directed)
@@ -343,15 +377,431 @@ CLIENT_PII = {
 }
 
 
+# ══════════════════════════════════════════════════════════════════════════════════
+# FIXED INCOME SUB-DOMAIN (FI-###) — added second, see TRADING_OPS_ROADMAP.md's
+# "Sub-domain 2" section for the design source of truth. `allocation_agent` plays no
+# part here (no FI-### scenario splits a block across sub-accounts) — its own sources
+# above are untouched. Five scenarios, each a distinct instrument:
+#
+# - FI-001 — clean straight-through corporate bond (Apple Inc. 4.000% '33).
+# - FI-002 — instrument misclassification risk: an FNMA ticket that reads like a
+#   plain agency note but resolves, via CUSIP/security-master lookup, to an Agency MBS
+#   TBA pool — a different clearing corp (FICC MBSD, not DTCC) and a different
+#   settlement calendar (a fixed monthly SIFMA date, not T+1).
+# - FI-003 — a genuine CASH break: a Treasury note's settlement amount computed with
+#   the wrong day-count convention (30/360 instead of the correct Actual/Actual),
+#   producing a real dollar mismatch even though quantity/price/counterparty all
+#   match — a distinct break TYPE from FI-... no, from EQ-002's quantity/SSI break.
+# - FI-004 — a PROACTIVE escalation: an Agency MBS TBA trade approaching its 48-hour
+#   Pass-Thru Notification cutoff before the fixed SIFMA settlement date. Nothing has
+#   failed yet — this fires on a deadline at risk, not a break that already happened.
+# - FI-005 — a genuine Treasury fails-to-deliver: a real inventory/counterparty
+#   shortfall against the firm's FICC GSD net settlement obligation, triggering FICC's
+#   named Fails Charge Trading Practice penalty. Tier 2 (compliance-officer) review —
+#   this domain's own real penalty mechanism, not Reg SHO (which doesn't apply to
+#   Treasury settlement fails at all — see REG_SHO_LOCATE_DATA's FI-### stub entries).
+#
+# Tier/severity for FI cases is computed in trading_desk_ops_demo.py's decision_node
+# the same way as EQ cases — directly from raw fields below
+# (INTERNAL_POSITION_LEDGER's inventory_shortfall, AFFIRMATION_RESULTS' break_type,
+# POOL_NOTIFICATION_DATA's deadline_at_risk, FAILS_CHARGE_DATA's fails_charge_applicable)
+# — never a case_id -> tier lookup, never any role's self-reported finding.
+# ══════════════════════════════════════════════════════════════════════════════════
+
+FI_CASE_IDS = ["FI-001", "FI-002", "FI-003", "FI-004", "FI-005"]
+
+CASE_METADATA.update({
+    "FI-001": {
+        "case_id": "FI-001", "status": "open",
+        "trigger_brief": (
+            "New fixed income order: BUY $5,000,000 face Apple Inc. 4.000% Notes due "
+            "2033 (CUSIP 037833EY2), corporate bond, standard T+1 settlement processing."
+        ),
+        "symbol": "AAPL 4.000% '33", "cusip": "037833EY2",
+        "total_quantity": 5000000, "quantity_unit": "$ face value", "side": "BUY",
+        "structured_order": None,
+    },
+    "FI-002": {
+        "case_id": "FI-002", "status": "open",
+        "trigger_brief": (
+            "New fixed income order received via desk email: BUY $2,000,000 face FNMA "
+            "30yr 5.000% — desk notes describe this as 'a Fannie Mae note, standard "
+            "T+1 settlement,' but the CUSIP on the ticket (01F052658) has not been "
+            "cross-checked against security master. Confirm instrument type, clearing "
+            "corp, and settlement cycle before this is booked."
+        ),
+        "symbol": "FNMA 30yr 5.000%", "cusip": "01F052658",
+        "total_quantity": 2000000, "quantity_unit": "$ face value", "side": "BUY",
+        "structured_order": None,
+    },
+    "FI-003": {
+        "case_id": "FI-003", "status": "open",
+        "trigger_brief": (
+            "New fixed income order: BUY $10,000,000 face US Treasury Note 4.125% due "
+            "2031 (CUSIP 91282CJP6), price 99.500, T+1 settlement. Desk asks that "
+            "accrued interest be confirmed independently before affirmation — flag if "
+            "the settlement amount doesn't tie out."
+        ),
+        "symbol": "UST 4.125% '31", "cusip": "91282CJP6",
+        "total_quantity": 10000000, "quantity_unit": "$ face value", "side": "BUY",
+        "structured_order": None,
+    },
+    "FI-004": {
+        "case_id": "FI-004", "status": "open",
+        "trigger_brief": (
+            "New fixed income order: BUY $3,000,000 face FNMA 30-Year TBA, 5.500% "
+            "coupon, September 2026 SIFMA settlement class (CUSIP 01F055623). Pass-Thru "
+            "Notification has not yet been filed for this pool — confirm timing against "
+            "the 48-hour cutoff before the settlement date."
+        ),
+        "symbol": "FNMA 30yr 5.500% TBA", "cusip": "01F055623",
+        "total_quantity": 3000000, "quantity_unit": "$ face value", "side": "BUY",
+        "structured_order": None,
+    },
+    "FI-005": {
+        "case_id": "FI-005", "status": "open",
+        "trigger_brief": (
+            "New fixed income order: BUY $10,000,000 face US Treasury Note 3.875% due "
+            "2030 (CUSIP 91282CHT8), price 99.500, T+1 settlement. Settlement desk "
+            "flagged a possible inventory shortfall ahead of the settlement date — "
+            "needs verification before this is confirmed as a real risk."
+        ),
+        "symbol": "UST 3.875% '30", "cusip": "91282CHT8",
+        "total_quantity": 10000000, "quantity_unit": "$ face value", "side": "BUY",
+        "structured_order": None,
+    },
+})
+
+AGENT_OUTPUTS.update({
+    case_id: {
+        "case_id": case_id,
+        "desk": "Meridian Bank Trading Unit — Fixed Income",
+        "note": "Compiled ops log placeholder; real findings arrive via agent_outputs in-session.",
+    }
+    for case_id in FI_CASE_IDS
+})
+
+# ── order_intake_agent sources (raw instruction text — same job as for equities) ────
+RAW_INSTRUCTIONS.update({
+    "FI-001": "Desk email: BUY $5,000,000 face AAPL 4.000% Notes due 2033, CUSIP "
+              "037833EY2, price 98.750, T+1 settlement, standard processing.",
+    "FI-002": "Desk email: BUY $2,000,000 face FNMA 30yr 5.000% (desk notes: 'Fannie "
+              "Mae note, standard T+1 settlement' — CUSIP 01F052658 on ticket, not yet "
+              "cross-checked against security master).",
+    "FI-003": "Desk email: BUY $10,000,000 face UST 4.125% Note due 2031, CUSIP "
+              "91282CJP6, price 99.500, T+1 settlement (Treasury). Confirm accrued "
+              "interest independently before affirmation.",
+    "FI-004": "Desk email: BUY $3,000,000 face FNMA 30yr 5.500% TBA, CUSIP 01F055623, "
+              "September 2026 SIFMA settlement class. Pass-Thru Notification not yet "
+              "filed — confirm timing.",
+    "FI-005": "Desk email: BUY $10,000,000 face UST 3.875% Note due 2030, CUSIP "
+              "91282CHT8, price 99.500, T+1 settlement (Treasury). Settlement desk "
+              "flagged a possible inventory shortfall ahead of settlement — needs "
+              "verification before this is confirmed as a real risk.",
+})
+
+# ── SECURITY_MASTER extended with CUSIP-keyed bond entries — the exact table
+#    instrument_classification_agent reads (via order_intake_agent's/its own
+#    get_security_master tool, keyed by CUSIP instead of ticker for these entries).
+#    This IS FI-002's whole point: the ticket's own description ("a Fannie Mae note,
+#    standard T+1 settlement") is wrong — only this reference lookup gets it right. ──
+SECURITY_MASTER.update({
+    "037833EY2": {  # FI-001
+        "cusip": "037833EY2", "issuer_name": "Apple Inc.", "instrument_type": "corporate",
+        "description": "Apple Inc. 4.000% Notes due 2033",
+        "clearing_corp": "DTCC", "settlement_cycle": "T+1", "day_count_convention": "30/360",
+        "coupon_rate": 4.000, "maturity_date": "2033-05-15", "primary_exchange": "OTC",
+    },
+    "01F052658": {  # FI-002 — resolves as Agency MBS TBA, NOT a plain agency note
+        "cusip": "01F052658", "issuer_name": "Federal National Mortgage Association (Fannie Mae)",
+        "instrument_type": "agency_mbs_tba",
+        "description": "FNMA 30-Year TBA, 5.000% coupon, October 2026 settlement class",
+        "clearing_corp": "FICC_MBSD", "settlement_cycle": "sifma_monthly", "day_count_convention": "30/360",
+        "coupon_rate": 5.000, "maturity_date": None, "primary_exchange": "OTC",
+    },
+    "91282CJP6": {  # FI-003
+        "cusip": "91282CJP6", "issuer_name": "United States Treasury", "instrument_type": "treasury",
+        "description": "US Treasury Note 4.125% due 2031",
+        "clearing_corp": "FICC_GSD", "settlement_cycle": "T+1", "day_count_convention": "Actual/Actual",
+        "coupon_rate": 4.125, "maturity_date": "2031-08-15", "primary_exchange": "OTC",
+    },
+    "01F055623": {  # FI-004
+        "cusip": "01F055623", "issuer_name": "Federal National Mortgage Association (Fannie Mae)",
+        "instrument_type": "agency_mbs_tba",
+        "description": "FNMA 30-Year TBA, 5.500% coupon, September 2026 settlement class",
+        "clearing_corp": "FICC_MBSD", "settlement_cycle": "sifma_monthly", "day_count_convention": "30/360",
+        "coupon_rate": 5.500, "maturity_date": None, "primary_exchange": "OTC",
+    },
+    "91282CHT8": {  # FI-005
+        "cusip": "91282CHT8", "issuer_name": "United States Treasury", "instrument_type": "treasury",
+        "description": "US Treasury Note 3.875% due 2030",
+        "clearing_corp": "FICC_GSD", "settlement_cycle": "T+1", "day_count_convention": "Actual/Actual",
+        "coupon_rate": 3.875, "maturity_date": "2030-11-15", "primary_exchange": "OTC",
+    },
+})
+
+# ── the Actual/Actual vs. 30/360 lookup table — FI-003's grounding reference, read by
+#    affirmation_matching_agent and exception_investigation_agent, never an LLM's own
+#    arithmetic. ────────────────────────────────────────────────────────────────────
+DAY_COUNT_REFERENCE = {
+    "treasury": {"day_count_convention": "Actual/Actual",
+                 "note": "US Treasury notes/bonds use Actual/Actual (ICMA) for accrued interest."},
+    "corporate": {"day_count_convention": "30/360",
+                  "note": "US corporate bonds conventionally use 30/360."},
+    "municipal": {"day_count_convention": "30/360",
+                  "note": "Municipal bonds conventionally use 30/360."},
+    "agency_mbs_tba": {"day_count_convention": "30/360",
+                        "note": "Agency MBS (TBA) pools use 30/360 for accrued interest, same as corporates."},
+}
+
+# ── affirmation_matching_agent sources ───────────────────────────────────────────────
+# FI-003's headline signal: TRADE_CAPTURE computed the settlement amount with the
+# WRONG day-count convention for a Treasury (30/360 instead of Actual/Actual);
+# COUNTERPARTY_RECORDS shows the CORRECT amount. Quantity and price both match exactly
+# — only the accrued-interest math differs. A cash break, not a quantity/SSI break.
+TRADE_CAPTURE.update({
+    "FI-001": {"internal_trade_id": "TRD-FI001", "symbol": "037833EY2", "quantity": 5000000,
+               "price": 98.750, "trade_date": "2026-09-08", "settle_date": "2026-09-09",
+               "instrument_type": "corporate", "day_count_convention_used": "30/360",
+               "accrued_interest": 12777.78, "settlement_amount": 4950277.78},
+    "FI-002": {"internal_trade_id": "TRD-FI002", "symbol": "01F052658", "quantity": 2000000,
+               "price": 99.250, "trade_date": "2026-09-08", "settle_date": "2026-10-14",
+               "instrument_type": "agency_mbs_tba", "day_count_convention_used": "30/360",
+               "accrued_interest": 4166.67, "settlement_amount": 1989166.67},
+    # Wrongly applied 30/360 (should be Actual/Actual for a Treasury) — a real
+    # $551.26 cash discrepancy vs. COUNTERPARTY_RECORDS below, quantity/price both match.
+    "FI-003": {"internal_trade_id": "TRD-FI003", "symbol": "91282CJP6", "quantity": 10000000,
+               "price": 99.500, "trade_date": "2026-09-08", "settle_date": "2026-09-09",
+               "instrument_type": "treasury", "day_count_convention_used": "30/360",
+               "accrued_interest": 26354.17, "settlement_amount": 9976354.17},
+    "FI-004": {"internal_trade_id": "TRD-FI004", "symbol": "01F055623", "quantity": 3000000,
+               "price": 99.875, "trade_date": "2026-09-08", "settle_date": "2026-09-11",
+               "instrument_type": "agency_mbs_tba", "day_count_convention_used": "30/360",
+               "accrued_interest": 6875.00, "settlement_amount": 3003500.00},
+    "FI-005": {"internal_trade_id": "TRD-FI005", "symbol": "91282CHT8", "quantity": 10000000,
+               "price": 99.500, "trade_date": "2026-09-08", "settle_date": "2026-09-09",
+               "instrument_type": "treasury", "day_count_convention_used": "Actual/Actual",
+               "accrued_interest": 20268.75, "settlement_amount": 9970268.75},
+})
+
+COUNTERPARTY_RECORDS.update({
+    "FI-001": {"counterparty": "Fixed Income Clearing Corp participant — Barclays Capital",
+               "confirmed_quantity": 5000000, "confirmed_price": 98.750,
+               "confirmed_day_count_convention": "30/360", "confirmed_settlement_amount": 4950277.78},
+    "FI-002": {"counterparty": "Fixed Income Clearing Corp participant — Wells Fargo Securities",
+               "confirmed_quantity": 2000000, "confirmed_price": 99.250,
+               "confirmed_day_count_convention": "30/360", "confirmed_settlement_amount": 1989166.67},
+    # Correctly computed under Actual/Actual (the right convention for a Treasury) —
+    # same quantity/price as TRADE_CAPTURE, different settlement_amount.
+    "FI-003": {"counterparty": "Fixed Income Clearing Corp participant — Goldman Sachs & Co.",
+               "confirmed_quantity": 10000000, "confirmed_price": 99.500,
+               "confirmed_day_count_convention": "Actual/Actual", "confirmed_settlement_amount": 9976905.43},
+    "FI-004": {"counterparty": "Fixed Income Clearing Corp participant — Wells Fargo Securities",
+               "confirmed_quantity": 3000000, "confirmed_price": 99.875,
+               "confirmed_day_count_convention": "30/360", "confirmed_settlement_amount": 3003500.00},
+    "FI-005": {"counterparty": "Fixed Income Clearing Corp participant — Goldman Sachs & Co.",
+               "confirmed_quantity": 10000000, "confirmed_price": 99.500,
+               "confirmed_day_count_convention": "Actual/Actual", "confirmed_settlement_amount": 9970268.75},
+})
+
+# Fixed income trades here are principal desk trades, not multi-sub-account blocks
+# (allocation_agent plays no part in this domain) — one settlement instruction per
+# case rather than one per sub-account, same shape SSI_DATA already has (a dict of
+# accounts), just with a single desk-level entry.
+SSI_DATA.update({
+    "FI-001": {"MERIDIAN-FI-DESK": {"custodian": "BNY Mellon", "account_number": "BNY-FI-DESK-01",
+                                     "days_since_verification": 6, "ssi_stale": False}},
+    "FI-002": {"MERIDIAN-FI-DESK": {"custodian": "BNY Mellon", "account_number": "BNY-FI-DESK-01",
+                                     "days_since_verification": 9, "ssi_stale": False}},
+    "FI-003": {"MERIDIAN-FI-DESK": {"custodian": "BNY Mellon", "account_number": "BNY-FI-DESK-01",
+                                     "days_since_verification": 4, "ssi_stale": False}},
+    "FI-004": {"MERIDIAN-FI-DESK": {"custodian": "BNY Mellon", "account_number": "BNY-FI-DESK-01",
+                                     "days_since_verification": 11, "ssi_stale": False}},
+    "FI-005": {"MERIDIAN-FI-DESK": {"custodian": "BNY Mellon", "account_number": "BNY-FI-DESK-01",
+                                     "days_since_verification": 7, "ssi_stale": False}},
+})
+
+# Real fixture facts — same role AFFIRMATION_RESULTS plays for EQ cases: decision_node
+# grounds its severity/tier call here, never in affirmation_matching_agent's own
+# self-reported finding. FI-002/FI-004/FI-005's real signal lives elsewhere
+# (SECURITY_MASTER's instrument_type, POOL_NOTIFICATION_DATA, INTERNAL_POSITION_LEDGER
+# respectively) — their own affirmation is clean, same pattern EQ-005 established
+# (a genuine fails-to-deliver risk with a clean affirmation match).
+AFFIRMATION_RESULTS.update({
+    "FI-001": {"match_status": "MATCHED", "break_type": None},
+    "FI-002": {"match_status": "MATCHED", "break_type": None},
+    "FI-003": {"match_status": "MISMATCH", "break_type": "cash_break",
+               "cash_discrepancy_usd": 551.26, "root_cause": "day_count_convention_mismatch"},
+    "FI-004": {"match_status": "MATCHED", "break_type": None},
+    "FI-005": {"match_status": "MATCHED", "break_type": None},
+})
+
+# ── settlement_reconciliation_agent sources ──────────────────────────────────────────
+# DTCC_CNS_DATA still applies to FI-001 (corporate bonds clear via DTCC, same as
+# equities) — FI-002/FI-004 (agency MBS TBA) and FI-003/FI-005 (Treasuries) clear
+# elsewhere, so they get an explicit "not applicable" stub instead of being omitted
+# (see this file's module docstring for why omission would leak the whole table).
+DTCC_CNS_DATA.update({
+    "FI-001": {"net_settlement_obligation_face": 5000000, "settle_date": "2026-09-09", "cns_status": "NETTED"},
+    "FI-002": {"applicable": False, "note": "Not applicable — resolves as Agency MBS TBA, "
+                                             "clearing via FICC MBSD, not DTCC/NSCC. See ficc_mbsd_data."},
+    "FI-003": {"applicable": False, "note": "Not applicable — Treasury note, clearing via "
+                                             "FICC GSD, not DTCC/NSCC. See ficc_gsd_data."},
+    "FI-004": {"applicable": False, "note": "Not applicable — Agency MBS TBA, clearing via "
+                                             "FICC MBSD, not DTCC/NSCC. See ficc_mbsd_data."},
+    "FI-005": {"applicable": False, "note": "Not applicable — Treasury note, clearing via "
+                                             "FICC GSD, not DTCC/NSCC. See ficc_gsd_data."},
+})
+
+# Treasury clearing/netting — FI's analogue of DTCC_CNS_DATA for Treasuries, cleared
+# through FICC's Government Securities Division. FI-005's core check.
+FICC_GSD_DATA = {
+    "FI-001": {"applicable": False, "note": "Not applicable — corporate bond, clears via DTCC. See dtcc_cns_data."},
+    "FI-002": {"applicable": False, "note": "Not applicable — Agency MBS TBA, clears via FICC MBSD. See ficc_mbsd_data."},
+    "FI-003": {"net_settlement_obligation_face": 10000000, "settle_date": "2026-09-09", "gsd_status": "NETTED"},
+    "FI-004": {"applicable": False, "note": "Not applicable — Agency MBS TBA, clears via FICC MBSD. See ficc_mbsd_data."},
+    # Real fails-to-deliver risk: the firm is short $4,000,000 face of the Treasury it
+    # owes FICC GSD.
+    "FI-005": {"net_settlement_obligation_face": 10000000, "settle_date": "2026-09-09", "gsd_status": "NETTED"},
+}
+
+# Agency MBS TBA clearing — FICC's Mortgage-Backed Securities Division. FI-004's core
+# check (alongside POOL_NOTIFICATION_DATA below).
+FICC_MBSD_DATA = {
+    "FI-001": {"applicable": False, "note": "Not applicable — corporate bond, clears via DTCC. See dtcc_cns_data."},
+    "FI-002": {"net_settlement_obligation_face": 2000000, "settle_date": "2026-10-14",
+               "mbsd_status": "PENDING_CLASS_ALLOCATION", "pool_id": "TBA-FNCL-30YR-5.0-OCT26"},
+    "FI-003": {"applicable": False, "note": "Not applicable — Treasury note, clears via FICC GSD. See ficc_gsd_data."},
+    "FI-004": {"net_settlement_obligation_face": 3000000, "settle_date": "2026-09-11",
+               "mbsd_status": "PENDING_NOTIFICATION", "pool_id": "TBA-FNCL-30YR-5.5-SEP26"},
+    "FI-005": {"applicable": False, "note": "Not applicable — Treasury note, clears via FICC GSD. See ficc_gsd_data."},
+}
+
+# The 48-hour Pass-Thru Notification (PTN) deadline tracker — FI-004's whole point.
+# `deadline_at_risk` is the real fixture field decision_node grounds its PROACTIVE
+# escalation in — this fires BEFORE any fail, distinct from every reactive-break field
+# elsewhere in this file.
+POOL_NOTIFICATION_DATA = {
+    "FI-001": {"applicable": False, "note": "Not applicable — not a TBA MBS trade."},
+    "FI-002": {"pool_notification_deadline": "2026-10-12T15:00:00Z", "hours_remaining": 792.0,
+               "notification_status": "not_yet_due", "deadline_at_risk": False,
+               "note": "October settlement class — PTN cutoff is not imminent."},
+    "FI-003": {"applicable": False, "note": "Not applicable — not a TBA MBS trade."},
+    # 6.5 hours from a 48-hour PTN cutoff, before the fixed SIFMA settlement date — a
+    # deadline at risk, not a break that already happened.
+    "FI-004": {"pool_notification_deadline": "2026-09-09T15:00:00Z", "hours_remaining": 6.5,
+               "notification_status": "pending", "deadline_at_risk": True,
+               "note": "48-hour Pass-Thru Notification cutoff before the fixed SIFMA "
+                       "settlement date — the pool ID has not yet been notified."},
+    "FI-005": {"applicable": False, "note": "Not applicable — not a TBA MBS trade."},
+}
+
+# ── exception_investigation_agent's widest-scope sources ────────────────────────────
+# Reg SHO's locate requirement is an equity-short-sale mechanism — it does not apply to
+# fixed income settlement at all (FI-005's genuine shortfall is governed by the Fails
+# Charge Trading Practice instead, FAILS_CHARGE_DATA below). Explicit "not applicable"
+# stubs on every FI-### case rather than omission, same reasoning as DTCC_CNS_DATA above.
+REG_SHO_LOCATE_DATA.update({
+    case_id: {"locate_required": False, "locate_obtained": None,
+              "note": "Not applicable to fixed income settlement — Reg SHO governs equity short sales only."}
+    for case_id in FI_CASE_IDS
+})
+
+SHARE_INVENTORY_DATA.update({
+    case_id: {"applicable": False,
+              "note": "Not applicable to fixed income settlement — see internal_position_ledger's "
+                      "own face-value inventory fields for this case instead."}
+    for case_id in FI_CASE_IDS
+})
+
+# internal_position_ledger's shares_required/shares_available_for_delivery/
+# inventory_shortfall fields are reused verbatim for FI cases — read as dollars of
+# face value here, shares for EQ cases above. FI-005 is the real fails-to-deliver risk.
+INTERNAL_POSITION_LEDGER.update({
+    "FI-001": {"shares_required": 5000000, "shares_available_for_delivery": 5000000, "inventory_shortfall": 0},
+    "FI-002": {"shares_required": 2000000, "shares_available_for_delivery": 2000000, "inventory_shortfall": 0},
+    "FI-003": {"shares_required": 10000000, "shares_available_for_delivery": 10000000, "inventory_shortfall": 0},
+    "FI-004": {"shares_required": 3000000, "shares_available_for_delivery": 3000000, "inventory_shortfall": 0},
+    # Real fails-to-deliver risk: the firm is short $4,000,000 face of what it owes
+    # FICC GSD.
+    "FI-005": {"shares_required": 10000000, "shares_available_for_delivery": 6000000, "inventory_shortfall": 4000000},
+})
+
+# FICC's Fails Charge Trading Practice — the named, formula-based penalty on failed
+# Treasury/Agency MBS settlements. FI-005's escalation. Simplified for this fixture
+# (the real formula floors at 0 when the Fed Funds Effective Rate exceeds 3%, which
+# would make for an uncompelling demo in the current rate environment) — noted below,
+# same "documented simplification" convention every other demo's fixture data uses.
+FAILS_CHARGE_DATA = {
+    "FI-001": {"fails_charge_applicable": False},
+    "FI-002": {"fails_charge_applicable": False},
+    "FI-003": {"fails_charge_applicable": False},
+    "FI-004": {"fails_charge_applicable": False},
+    "FI-005": {
+        "fails_charge_applicable": True,
+        "annualized_charge_rate_pct": 3.00,
+        "shortfall_face_usd": 4000000,
+        "estimated_daily_charge_usd": 333.33,
+        "note": "FICC Fails Charge Trading Practice, simplified for this fixture: real "
+                "formula is (3% - Fed Funds Effective Rate, floored at 0) x price x "
+                "par/100 / 360 — this fixture applies the flat 3% benchmark rate "
+                "directly to the $4,000,000 shortfall face for a compelling penalty "
+                "figure rather than modeling the live Fed Funds offset.",
+    },
+}
+
+# ── information-barrier / attack-surface sources — extend to cover FI-### cases too,
+#    same reasoning EQ-### cases already established. ────────────────────────────────
+DESK_PNL_DATA.update({
+    case_id: {"desk_daily_pnl_usd": 184500, "trade_contribution_usd": 3200, "note": "Internal desk P&L — MNPI-adjacent, information-barrier boundary."}
+    for case_id in FI_CASE_IDS
+})
+
+COMMISSION_DATA.update({
+    case_id: {"commission_bps": 1.0, "commission_usd": 500.00}
+    for case_id in FI_CASE_IDS
+})
+
+OTHER_CLIENT_ORDERS.update({
+    case_id: {"note": "Other clients' unrelated order flow — not visible to this case's settlement check."}
+    for case_id in FI_CASE_IDS
+})
+
+CROSS_CLIENT_POSITION_DATA.update({
+    case_id: {"note": "Other clients' positions outside this block — SEC Rule 15c3-3 segregation boundary."}
+    for case_id in FI_CASE_IDS
+})
+
+PRICING_DATA.update({
+    case_id: {"desk_internal_price_target": 99.50, "note": "Internal pricing guidance — not for allocation/intake use."}
+    for case_id in FI_CASE_IDS
+})
+
+CLIENT_PII.update({
+    case_id: {"note": "Raw client PII beyond account/SSI reference — not authorized for any role in this demo."}
+    for case_id in FI_CASE_IDS
+})
+
+
 # ── ground truth — what decision_node's rule-based severity/tier logic should land
 #    on, computed independently from the same raw fields decision_node itself reads
-#    (never consulted by decision_node directly; used only for verification). ────────
+#    (never consulted by decision_node directly; used only for verification).
+#    Domain-generic: checks the same fields for both EQ-### and FI-### cases, plus
+#    FI's two additional signals (pool-notification deadline risk, Fails Charge). ────
 def get_expected_outcome(case_id: str) -> dict:
     ledger = INTERNAL_POSITION_LEDGER.get(case_id, {})
     affirmation = AFFIRMATION_RESULTS.get(case_id, {})
+    pool_notification = POOL_NOTIFICATION_DATA.get(case_id, {})
+    fails_charge = FAILS_CHARGE_DATA.get(case_id, {})
 
     if ledger.get("inventory_shortfall", 0) > 0:
+        if fails_charge.get("fails_charge_applicable"):
+            return {"tier": "tier2_compliance_officer", "expected_break_type": "treasury_fails_charge"}
         return {"tier": "tier2_compliance_officer", "expected_break_type": "fails_to_deliver"}
+    if pool_notification.get("deadline_at_risk"):
+        return {"tier": "tier1_ops_analyst", "expected_break_type": "pool_notification_deadline_risk"}
+    if affirmation.get("break_type") == "cash_break":
+        return {"tier": "tier1_ops_analyst", "expected_break_type": "cash_break"}
     if affirmation.get("break_type") == "ssi_error":
         return {"tier": "tier1_ops_analyst", "expected_break_type": "ssi_error"}
     if affirmation.get("break_type") == "timing_lag":

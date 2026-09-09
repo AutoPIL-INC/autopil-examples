@@ -145,18 +145,36 @@ class RemoteContextGuard:
 
 
 def ensure_policy(base_url: str, admin_key: str, name: str, agent_role: str, spec: dict) -> None:
-    """Idempotently ensure a policy named `name` exists on the hosted tenant,
-    creating it via POST /v1/policies if missing. Existing policies are left as-is —
-    call sites should pick a name unlikely to collide with a pre-seeded one (e.g. the
-    "demo_tdo_" prefix this demo uses) if they need guaranteed content, since this
-    function only checks for a name match, not content equality.
+    """Idempotently ensure a policy named `name` exists on the hosted tenant AND that
+    its content matches `spec`, creating it via POST /v1/policies if missing or
+    updating it via PUT /v1/policies/{policy_id} if it exists but has drifted.
+
+    Real gap caught live, 2026-09-08: this function used to be create-only ("existing
+    policies are left as-is"), which meant a hosted policy created before a local
+    trading_desk_ops.yaml change went silently stale. Confirmed directly: the Fixed
+    Income extension added `day_count_reference` to affirmation_matching_agent's
+    trade_matching task, `trace_compilation` to compliance_reporting_agent's allowed
+    tasks, and several FICC/pool-notification/fails-charge sources to
+    settlement_reconciliation_agent's and exception_investigation_agent's task
+    bindings — none of that reached the hosted tenant, since those 4 policies were
+    already created back when this demo only had Equities. Running the full 10-case
+    EQ+FI suite in hosted mode surfaced real denials on legitimate FI-### calls
+    ("Task 'trade_matching' is not permitted to access source 'day_count_reference'",
+    "Task 'trace_compilation' is not in the allowed task list for role
+    'compliance_reporting_agent'") that the local policy explicitly grants —
+    disposition still came out correct in every case since decision_node is grounded
+    in raw fixture data, never a role's own tool-call success, but this meant those
+    specific tool calls were needlessly denied under hosted mode until refreshed.
 
     `spec` is passed straight through as the rest of CreatePolicyRequest's body
     (allowed_sources/denied_sources/allowed_tasks/denied_tasks/max_sensitivity/
     task_bindings/require_task_for_sensitivity/description/regulations/...) — no
     permitted_agent_ids, session_ttl_minutes, or sensitivity_decay field exists on
     this endpoint, confirmed against the real OpenAPI schema for this demo
-    specifically, not assumed from an earlier demo's check.
+    specifically, not assumed from an earlier demo's check. The update path compares
+    only the fields `spec` actually sets against the existing policy's own values —
+    fields the hosted API tracks that aren't part of `spec` (version, timestamps,
+    agents_using_this_policy, enforcement_stats, ...) are never touched.
     """
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
     existing_resp = client.get("/v1/policies")
@@ -165,10 +183,14 @@ def ensure_policy(base_url: str, admin_key: str, name: str, agent_role: str, spe
             f"AutoPIL API error listing policies ({existing_resp.status_code}): "
             f"{existing_resp.text} — check AUTOPIL_ADMIN_KEY in .env"
         )
-    if any(p.get("name") == name for p in existing_resp.json()):
+    existing = next((p for p in existing_resp.json() if p.get("name") == name), None)
+    if existing is None:
+        resp = client.post("/v1/policies", json={"name": name, "agent_role": agent_role, **spec})
+        resp.raise_for_status()
         return
-    resp = client.post("/v1/policies", json={"name": name, "agent_role": agent_role, **spec})
-    resp.raise_for_status()
+    if any(existing.get(k) != v for k, v in spec.items()):
+        resp = client.put(f"/v1/policies/{existing['policy_id']}", json={"agent_role": agent_role, **spec})
+        resp.raise_for_status()
 
 
 def hosted_spec_from_local_policy(policy: dict, regulations: list) -> dict:
@@ -247,8 +269,38 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
                 "owner": owner_tag, "owner_team": owner_team, "framework": "langgraph",
                 "policy_name": policy_name_for(role),
             })
-            resp.raise_for_status()
-            agent = resp.json()
+            if resp.status_code == 409:
+                # Real incident, 2026-09-08: this demo's own 7 original (Equities)
+                # agents were registered under owner="Trading-Desk-Ops" -- missing the
+                # "-team" suffix this code actually queries by ("Trading-Desk-Ops-team"),
+                # a literal drift from the original hosted-mode build. The owner-scoped
+                # GET above found nothing, so this POST tried to create a duplicate
+                # agent_role and the API correctly rejected it -- but the unhandled
+                # exception took down langgraph dev's ENTIRE startup (every graph in
+                # langgraph.json, not just trading_desk_ops), since module-level
+                # bootstrap_agents() calls run at graph-import time. Same bug class hit
+                # fraud_investigation the same day (see fraud_saas_guard.py) -- this is
+                # the second, independent occurrence, confirming it's worth guarding
+                # against generically rather than as a one-off fix. Recover by searching
+                # for the existing agent across ALL owners (not just owner_tag) and
+                # adopting it, self-healing its owner field so this doesn't recur.
+                all_resp = client.get("/v1/agents", params={"framework": "langgraph"})
+                all_resp.raise_for_status()
+                agent = next((a for a in all_resp.json() if a["agent_role"] == role), None)
+                if agent is None:
+                    raise RuntimeError(
+                        f"AutoPIL API returned 409 creating agent_role={role!r}, but no "
+                        f"existing agent with that role exists under any owner -- a real "
+                        f"conflict, not a stale-owner-tag mismatch. Check the hosted "
+                        f"tenant manually rather than assuming this recovery path covers it."
+                    ) from None
+                if agent.get("owner") != owner_tag:
+                    fix_resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner": owner_tag})
+                    fix_resp.raise_for_status()
+                    agent = fix_resp.json()
+            else:
+                resp.raise_for_status()
+                agent = resp.json()
         elif owner_team is not None and agent.get("owner_team") != owner_team:
             resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner_team": owner_team})
             resp.raise_for_status()
