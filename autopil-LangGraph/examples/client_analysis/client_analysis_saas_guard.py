@@ -54,7 +54,9 @@ enforced identically, etc.) — all of that applies here too, since it's the sam
 hosted API and the same RemoteContextGuard implementation.
 """
 
+import json
 import time
+from pathlib import Path
 
 import httpx
 
@@ -145,6 +147,25 @@ class RemoteContextGuard:
         return [_RemoteAuditEvent(e) for e in resp.json()["events"]]
 
 
+_AGENT_ID_CACHE_PATH = Path(__file__).with_name(".client_analysis_agent_ids.json")
+
+
+def _load_agent_id_cache() -> dict:
+    if _AGENT_ID_CACHE_PATH.exists():
+        try:
+            return json.loads(_AGENT_ID_CACHE_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_agent_id_cache(cache: dict) -> None:
+    try:
+        _AGENT_ID_CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True))
+    except OSError:
+        pass  # best-effort; a missing cache just means re-discovery by role next time
+
+
 def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag: str,
                       policy_name_for: "callable[[str], str]" = lambda role: f"{role}_policy",
                       owner_team: "str | None" = None) -> dict[str, str]:
@@ -162,29 +183,65 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
     every call if it's out of date, including on agents that were registered before
     this parameter existed.
     """
+    cache = _load_agent_id_cache()
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
-    existing_resp = client.get("/v1/agents", params={"framework": "langgraph", "owner": owner_tag})
-    if existing_resp.is_error:
-        raise RuntimeError(
-            f"AutoPIL API error listing agents ({existing_resp.status_code}): "
-            f"{existing_resp.text} — check AUTOPIL_ADMIN_KEY in .env"
-        )
-    by_role = {a["agent_role"]: a for a in existing_resp.json()}
-
     result = {}
+    cache_dirty = False
+    all_agents = None  # fetched lazily, only if at least one role misses the cache
+
     for role in roles:
-        agent = by_role.get(role)
+        agent = None
+        cached_id = cache.get(role)
+        if cached_id:
+            resp = client.get(f"/v1/agents/{cached_id}")
+            if resp.status_code == 200:
+                agent = resp.json()
+            elif resp.status_code != 404:
+                resp.raise_for_status()
+            # 404 falls through to rediscovery -- the cached id is stale (agent
+            # deleted on the tenant since we last saw it), not a code error.
+
         if agent is None:
-            resp = client.post("/v1/agents", json={
-                "agent_role": role, "display_name": role.replace("_", " ").title(),
-                "description": "Registered by the AutoPIL + LangGraph demos "
-                                "(github.com/AutoPIL-INC/autopil-examples)",
-                "owner": owner_tag, "owner_team": owner_team, "framework": "langgraph",
-                "policy_name": policy_name_for(role),
-            })
-            resp.raise_for_status()
-            agent = resp.json()
-        elif owner_team is not None and agent.get("owner_team") != owner_team:
+            if all_agents is None:
+                all_resp = client.get("/v1/agents", params={"framework": "langgraph"})
+                all_resp.raise_for_status()
+                all_agents = all_resp.json()
+            candidates = [a for a in all_agents if a["agent_role"] == role]
+            if len(candidates) == 1:
+                agent = candidates[0]
+            elif len(candidates) > 1:
+                agent = next((a for a in candidates if a.get("owner") == owner_tag), candidates[0])
+            else:
+                resp = client.post("/v1/agents", json={
+                    "agent_role": role, "display_name": role.replace("_", " ").title(),
+                    "description": "Registered by the AutoPIL + LangGraph demos "
+                                    "(github.com/AutoPIL-INC/autopil-examples)",
+                    "owner": owner_tag, "owner_team": owner_team, "framework": "langgraph",
+                    "policy_name": policy_name_for(role),
+                })
+                if resp.status_code == 409:
+                    # A concurrent process (another langgraph dev instance starting at
+                    # the same moment) created this agent_role between our search and
+                    # this POST -- re-fetch rather than raising.
+                    retry_resp = client.get("/v1/agents", params={"framework": "langgraph"})
+                    retry_resp.raise_for_status()
+                    agent = next((a for a in retry_resp.json() if a["agent_role"] == role), None)
+                    if agent is None:
+                        raise RuntimeError(
+                            f"AutoPIL API returned 409 creating agent_role={role!r}, but no "
+                            f"existing agent with that role could be found afterward -- a "
+                            f"real conflict. Check the hosted tenant manually."
+                        ) from None
+                else:
+                    resp.raise_for_status()
+                    agent = resp.json()
+            cache[role] = agent["agent_id"]
+            cache_dirty = True
+
+        if owner_team is not None and not agent.get("owner_team"):
+            # Backfill only, on agents registered before this parameter existed --
+            # never overwrite an owner_team a human already set, same
+            # don't-fight-dashboard-edits principle as owner above.
             resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner_team": owner_team})
             resp.raise_for_status()
             agent = resp.json()
@@ -193,4 +250,7 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
             resp.raise_for_status()
             agent = resp.json()
         result[role] = agent["agent_id"]
+
+    if cache_dirty:
+        _save_agent_id_cache(cache)
     return result
