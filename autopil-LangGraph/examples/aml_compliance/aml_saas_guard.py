@@ -212,14 +212,24 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
     evaluate endpoint's role-scan fallback — see the module docstring on why that's
     risky on a shared trial tenant). Returns {agent_role: agent_id}.
 
-    Reuses an existing agent (matching agent_role + owner_tag) if one's already
-    registered from a prior run/process, rather than creating a new one every time —
-    approves it first if it's still in "draft". `owner_tag` (stored in the `owner`
-    field) is purely this lookup key, distinct from `owner_team` — the actual
-    business-accountable team — which is kept in sync via PUT on every call if it's
-    out of date, including on agents that were registered before this parameter
-    existed. `policy_name` is kept in sync the same way — needed here specifically:
-    this demo's roles were already registered on the shared tenant under the default
+    Agent identity is tracked via a small local JSON cache
+    (`.aml_compliance_agent_ids.json`, gitignored) mapping role -> agent_id, not by a
+    live GET filtered by `owner`. A cache hit is confirmed with a direct
+    `GET /v1/agents/{id}` (self-heals via rediscovery if that specific agent was ever
+    deleted). A cache miss searches by `agent_role` alone, tenant-wide; `owner_tag` is
+    used only as a soft tie-breaking hint on an ambiguous multi-match, never as a hard
+    filter. `owner`/`owner_team` are written once, at creation, and never touched
+    again by this function — this matters because `owner` used to be the lookup
+    mechanism itself, and a real incident, 2026-09-08/09, hit `fraud_investigation`
+    and `trading_desk_ops` independently (see either module's own docstring) when a
+    human edited `owner` in the AutoPIL dashboard and the owner-scoped GET then found
+    nothing, cascading into a 409 that took down `langgraph dev`'s entire startup.
+    This demo carried the identical design and was fixed proactively at the same
+    time. `policy_name`, unlike owner/owner_team, is still kept in sync on every
+    call — it's a code-controlled binding, not a human-editable business field, so
+    there's no dashboard-edit conflict to protect against there. Needed here
+    specifically, since this demo's roles were already registered on the shared
+    tenant under the default
     `f"{role}_policy"` naming before it switched to dedicated `demo_aml_<role>_policy`
     policies (see `ensure_policy()`/module docstring), and reusing an existing agent
     without rebinding its policy would silently keep evaluating against the old
