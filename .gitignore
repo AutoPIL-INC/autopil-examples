@@ -8,3 +8,4 @@ node_modules/
 dist/
 .langgraph_api/
 *.db
+.*_agent_ids.json
