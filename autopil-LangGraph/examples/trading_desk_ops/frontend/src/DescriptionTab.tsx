@@ -1,5 +1,5 @@
 import { AGENT_POLICIES, REGULATIONS, type AgentPolicy } from "./policyData";
-import { CASE_IDS, CASE_INFO, CASE_META } from "./types";
+import { CASE_IDS, CASE_INFO, CASE_META, DOMAIN_LABELS } from "./types";
 
 function PolicyCard({ policy }: { policy: AgentPolicy }) {
   return (
@@ -31,21 +31,28 @@ function PolicyCard({ policy }: { policy: AgentPolicy }) {
 }
 
 export default function DescriptionTab() {
+  // AGENT_POLICIES order mirrors trading_desk_ops.yaml's own policies: list — see
+  // policyData.ts's header comment for the exact index layout.
   const orchestrator = AGENT_POLICIES[0];
   const orderIntake = AGENT_POLICIES[1];
-  const followUpSpecialists = AGENT_POLICIES.slice(2, 5);
-  const compiler = AGENT_POLICIES[6];
+  const instrumentClassification = AGENT_POLICIES[2]; // Fixed Income only
+  const allocation = AGENT_POLICIES[3]; // Equities only
+  const followUpSpecialists = [AGENT_POLICIES[4], AGENT_POLICIES[5], AGENT_POLICIES[6]];
+  const compiler = AGENT_POLICIES[7];
 
   return (
     <div className="description-tab">
       <section className="desc-section">
         <h2>What this demo shows</h2>
         <p>
-          Seven AI agents handle a block equity order — a different name each scenario
-          (MSFT, NVDA, AAPL, AMZN, GOOG) — the way a real
-          trading-operations desk at Meridian Bank would — an orchestrator, an order
-          intake parser, an allocation specialist, a same-day affirmation matcher, a
-          DTCC/NSCC settlement reconciler, an exception investigator, and a compliance
+          Eight AI agents handle two sub-domains at Meridian Bank's Trading Unit —
+          Equities (a block equity order, a different ticker each scenario: MSFT, NVDA,
+          AAPL, AMZN, GOOG) and Fixed Income (a fixed income trade, a different
+          instrument each scenario: a corporate bond, an agency MBS TBA pool, two
+          Treasury notes) — the way a real trading-operations desk would: an
+          orchestrator, an order intake parser, an instrument classifier (fixed income
+          only) or an allocation specialist (equities only), a same-day affirmation
+          matcher, a settlement reconciler, an exception investigator, and a compliance
           reporting compiler — each given access to more trade, position, and
           settlement data than it's actually allowed to use, all inside a T+1
           settlement window with no slack for manual exception handling.
@@ -53,11 +60,13 @@ export default function DescriptionTab() {
         <p>
           AutoPIL is the policy layer that decides, in real time, what each agent can
           see. When an agent reaches for data outside its lane — desk P&amp;L,
-          commission, another client's position, raw client PII — AutoPIL blocks it
-          and logs why, the same way it would in production, not because the demo told
-          it not to look there. And no settlement disposition happens on an AI's
-          say-so: a human reviewer signs off or overrides every recommendation before
-          it's final — at one of two review tiers, depending on real severity signals.
+          commission, another client's position, raw client PII, the Fails Charge
+          penalty calc before a shortfall is even confirmed — AutoPIL blocks it and logs
+          why, the same way it would in production, not because the demo told it not to
+          look there. And no settlement disposition happens on an AI's say-so: a human
+          reviewer signs off or overrides every recommendation before it's final — at
+          one of two review tiers, depending on real severity signals grounded in
+          fixture data, never the case ID.
         </p>
         <details className="desc-technical">
           <summary>How this actually works, technically</summary>
@@ -73,22 +82,28 @@ export default function DescriptionTab() {
           <p>
             Unlike <code>quality_control</code>'s fixed first step, the orchestrator's
             classification here is <strong>genuinely dynamic</strong>: it classifies
-            the incoming trigger (new order / amendment / cancellation / PM rebalance /
-            corporate-action trade) via a real LLM call, and that classification
-            decides which specialist runs <strong>first</strong>. A new-order trigger
-            routes through <code>order_intake_agent</code> to parse the raw
-            instruction; a PM-rebalance trigger arrives already structured from the
-            PM's own system, so <code>order_intake_agent</code> is skipped
-            entirely — not run as a no-op, genuinely excluded from the routing
-            candidate list. Compare the EQ-001 and EQ-004 cases below to watch this
-            live. No live OMS/EMS, custodian, or DTCC/NSCC feed is involved anywhere —
-            every guarded getter reads from simulated fixture data.
+            both the incoming trigger (new order / amendment / cancellation / PM
+            rebalance / corporate-action trade) <em>and</em> the sub-domain (equities /
+            fixed income) via a real LLM call, and that classification decides which
+            specialist runs <strong>first</strong>. A new-order trigger routes through{" "}
+            <code>order_intake_agent</code> to parse the raw instruction; a PM-rebalance
+            trigger (equities only) arrives already structured from the PM's own system,
+            so <code>order_intake_agent</code> is skipped entirely — not run as a no-op,
+            genuinely excluded from the routing candidate list. Compare the EQ-001 and
+            EQ-004 cases below to watch this live. Fixed income introduces two mechanisms
+            no Equities case exercises: a genuinely distinct <strong>cash break</strong>{" "}
+            (a day-count/accrued-interest mismatch, FI-003 — a different fixture field
+            entirely from a quantity/SSI break, not a relabeling) and a{" "}
+            <strong>proactive deadline escalation</strong> (a TBA pool-notification
+            cutoff at risk, FI-004 — fires before any settlement fail, not after one). No
+            live OMS/EMS, custodian, DTCC/NSCC, or FICC feed is involved anywhere — every
+            guarded getter reads from simulated fixture data.
           </p>
         </details>
       </section>
 
       <section className="desc-section">
-        <h2>The 7 agents</h2>
+        <h2>The 8 agents</h2>
         <div className="flow-diagram">
           <div className="flow-box flow-orchestrator">
             <div className="flow-box-title">{orchestrator.displayName}</div>
@@ -96,10 +111,10 @@ export default function DescriptionTab() {
           </div>
           <div className="flow-arrow-down" />
           <div className="flow-branch-label">
-            classifies the trigger via a real LLM call — this decides which specialist runs
-            first: a new order routes through order_intake_agent; a PM-rebalance trigger
-            skips straight to allocation_agent, since order_intake_agent's own trigger is
-            genuinely not applicable
+            classifies the trigger AND the sub-domain via a real LLM call — this decides
+            which specialist runs first: a new order routes through order_intake_agent;
+            an equities PM-rebalance trigger skips straight to allocation_agent, since
+            order_intake_agent's own trigger is genuinely not applicable
           </div>
           <div className="flow-box flow-specialist">
             <div className="flow-box-title">{orderIntake.displayName}</div>
@@ -107,8 +122,24 @@ export default function DescriptionTab() {
           </div>
           <div className="flow-arrow-down" />
           <div className="flow-branch-label">
+            domain decides which role runs next — the one role each sub-domain doesn't
+            share with the other
+          </div>
+          <div className="flow-row">
+            <div className="flow-box flow-specialist">
+              <div className="flow-box-title">{allocation.displayName} <span className="flow-domain-tag flow-domain-tag-eq">Equities</span></div>
+              <div className="flow-box-sub">{allocation.description}</div>
+            </div>
+            <div className="flow-box flow-specialist">
+              <div className="flow-box-title">{instrumentClassification.displayName} <span className="flow-domain-tag flow-domain-tag-fi">Fixed Income</span></div>
+              <div className="flow-box-sub">{instrumentClassification.description}</div>
+            </div>
+          </div>
+          <div className="flow-arrow-down" />
+          <div className="flow-branch-label">
             orchestrator re-routes among these + order_intake_agent (if not skipped), based on
-            findings and denials so far — also genuinely LLM-driven
+            findings and denials so far — also genuinely LLM-driven, same re-routing loop
+            for either domain
           </div>
           <div className="flow-row">
             {followUpSpecialists.map((p) => (
@@ -130,10 +161,11 @@ export default function DescriptionTab() {
           <div className="flow-box flow-review">
             <div className="flow-box-title">Two-Tier Human Review</div>
             <div className="flow-box-sub">
-              Tier 1 (ops-analyst) for routine corrections, Tier 2 (compliance-officer)
-              for escalated settlement-risk events — computed from real fixture data,
-              never the case ID. Approve or override, a written note is required
-              either way, at either tier. See DESIGN.md.
+              Tier 1 (ops-analyst) for routine corrections and proactive escalations,
+              Tier 2 (compliance-officer) for escalated settlement-risk events (Reg SHO
+              for equities, FICC's named Fails Charge Trading Practice for fixed income)
+              — computed from real fixture data, never the case ID. Approve or override,
+              a written note is required either way, at either tier. See DESIGN.md.
             </div>
           </div>
           <div className="flow-arrow-down" />
@@ -166,7 +198,8 @@ export default function DescriptionTab() {
           with the <code>regulations:</code> metadata-block convention borrowed from{" "}
           <code>policies/financial_services/clearing_settlement.yaml</code>. Each row
           below is a real regulatory requirement mapped directly onto the policy
-          mechanism that enforces it, not a bare compliance-sounding label.
+          mechanism that enforces it, not a bare compliance-sounding label. The last 5
+          rows are Fixed Income's own additions.
         </p>
         <div className="regulation-table">
           {REGULATIONS.map((r) => (
@@ -187,7 +220,7 @@ export default function DescriptionTab() {
       </section>
 
       <section className="desc-section">
-        <h2>The 5 cases</h2>
+        <h2>The 10 cases</h2>
         <div className="case-grid">
           {CASE_IDS.map((caseId) => {
             const info = CASE_INFO[caseId];
@@ -198,9 +231,10 @@ export default function DescriptionTab() {
                   <span className="case-card-id">{caseId}</span>
                   <span className="case-card-time">{info.estimatedTime}</span>
                 </div>
+                <span className={`domain-badge domain-badge-${meta.domain}`}>{DOMAIN_LABELS[meta.domain]}</span>
                 <div className="case-card-title">{info.title}</div>
                 <div className="case-card-meta">
-                  {meta.symbol} · {meta.side} {meta.totalQuantity.toLocaleString()} shares
+                  {meta.symbol} · {meta.side} {meta.totalQuantity.toLocaleString()} {meta.quantityUnit}
                 </div>
                 <div className="case-card-description">{info.description}</div>
               </div>

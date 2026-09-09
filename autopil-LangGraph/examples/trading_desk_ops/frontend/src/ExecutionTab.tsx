@@ -1,21 +1,43 @@
 import { useEffect, useRef, useState } from "react";
 import { useStream } from "@langchain/langgraph-sdk/react";
-import { regulationForDenial } from "./policyData";
+import { REGULATIONS, regulationForDenial } from "./policyData";
 import {
   CASE_IDS,
   CASE_INFO,
   CASE_META,
+  DOMAIN_LABELS,
   OVERRIDE_ACTIONS,
   PROVIDERS,
   TIER_LABELS,
+  classifyProposedAction,
   initialInput,
   type AuditSummary,
+  type BreakKind,
   type FeedEvent,
   type ReviewInterruptPayload,
   type TradingOpsState,
 } from "./types";
 
 const API_URL = "http://localhost:2024";
+
+// Which regulation a given break KIND is actually grounded in, per REGULATIONS in
+// policyData.ts — not invented here, just a display-side lookup keyed off
+// classifyProposedAction()'s own kind. "clean"/"ssi_error"/"timing_lag" have no single
+// regulation-grounded banner line in the original Equities build (SSI/timing-lag are
+// data-quality findings, not a named regulatory mechanism), so they're intentionally
+// absent from this map, same as before Fixed Income was added.
+const GROUNDING_REGULATION_ID_BY_KIND: Partial<Record<BreakKind, string>> = {
+  fails_to_deliver_eq: "REG-SHO",
+  fails_to_deliver_fi: "FICC-FAILS-CHARGE",
+  cash_break: "DAY-COUNT-CONVENTION",
+  pool_notification_risk: "FICC-MBSD-PTN",
+};
+
+function groundingRegulationForAction(proposedAction: string) {
+  const info = classifyProposedAction(proposedAction);
+  const regulationId = info ? GROUNDING_REGULATION_ID_BY_KIND[info.kind] : undefined;
+  return regulationId ? REGULATIONS.find((r) => r.id === regulationId) : undefined;
+}
 
 function ToolCallRow({ event }: { event: FeedEvent & { type: "tool_call" } }) {
   const denied = event.status === "denied";
@@ -45,7 +67,9 @@ function ToolCallRow({ event }: { event: FeedEvent & { type: "tool_call" } }) {
 // `skipped` — roles the classification determined are genuinely not applicable to
 // this trigger (e.g. order_intake_agent on a pm_rebalance trigger) — rendered as a
 // distinct SKIP row directly beneath the route decision so EQ-004's path visibly
-// diverges from EQ-001's without reading raw JSON.
+// diverges from EQ-001's without reading raw JSON. `domain` is now "equities" or
+// "fixed_income" — this row already rendered it generically before Fixed Income
+// existed, so no change was needed here beyond this comment.
 function RoutingRow({ event }: { event: FeedEvent & { type: "routing" } }) {
   const isInitial = event.stage === "initial";
   return (
@@ -100,17 +124,41 @@ function AuditSummaryTable({ summary }: { summary: AuditSummary }) {
   );
 }
 
+// A break-kind badge/note rendered alongside the tier badge — both in the pending
+// ReviewPanel and the final DispositionBanner — so a cash break (FI-003), a proactive
+// pool-notification deadline escalation (FI-004), and a genuine fails-to-deliver
+// (EQ-005/FI-005, two different named penalty regimes) never render identically to
+// each other or to a routine SSI/timing-lag correction. Keyed off classifyProposedAction()
+// — the only backend-emitted signal that reliably distinguishes break TYPE (see its
+// own doc comment in types.ts for why free-text findings can't be parsed reliably instead).
+function BreakKindNote({ proposedAction }: { proposedAction: string }) {
+  const info = classifyProposedAction(proposedAction);
+  if (!info || info.kind === "clean") return null;
+  const grounding = groundingRegulationForAction(proposedAction);
+  return (
+    <div className={`break-kind-note break-kind-${info.kind}`}>
+      <span className={`break-kind-badge break-kind-${info.kind}`}>{info.label}</span>
+      {info.proactive && (
+        <div className="break-kind-proactive">
+          Proactive escalation — fires before any settlement fail, not a reactive break investigation.
+        </div>
+      )}
+      {grounding && (
+        <div className="feed-regulation">
+          Grounds: <span className="regulation-id">{grounding.id}</span> — {grounding.name}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DispositionBanner({ event }: { event: FeedEvent & { type: "disposition" } }) {
   const isTier2 = event.tier === "tier2_compliance_officer";
   return (
     <div className="disposition-banner">
       <div className="disposition-action">{event.action}</div>
       <div className={`tier-badge ${isTier2 ? "tier2" : "tier1"}`}>{event.tier_label}</div>
-      {isTier2 && (
-        <div className="feed-regulation">
-          Grounds: <span className="regulation-id">REG-SHO</span> — Regulation SHO Locate Requirement (real inventory shortfall against the DTCC/NSCC obligation)
-        </div>
-      )}
+      <BreakKindNote proposedAction={event.proposed_action} />
       <div className={`disposition-review ${event.human_approved ? "approved" : "overridden"}`}>
         <strong>{event.human_approved ? "✓ Approved by reviewer" : "⚠ Overridden by reviewer"}</strong>
         {!event.human_approved && (
@@ -161,6 +209,7 @@ function ReviewPanel({
         Awaiting {isTier2 ? "compliance-officer" : "ops-analyst"} review — {payload.case_id}
       </div>
       <div className="review-proposed">Proposed: {payload.proposed_action}</div>
+      <BreakKindNote proposedAction={payload.proposed_action} />
       <div className="review-meta">
         specialists run: {payload.specialists_run.join(", ") || "none"}
         {payload.skipped_roles.length > 0 && ` · skipped: ${payload.skipped_roles.join(", ")}`}
@@ -223,8 +272,9 @@ function CaseCard({
         <span className="case-card-time">{info.estimatedTime}</span>
       </div>
       <div className="case-card-body">
+        <span className={`domain-badge domain-badge-${meta.domain}`}>{DOMAIN_LABELS[meta.domain]}</span>
         <div className="case-card-meta">
-          {meta.symbol} · {meta.side} {meta.totalQuantity.toLocaleString()} shares
+          {meta.symbol} · {meta.side} {meta.totalQuantity.toLocaleString()} {meta.quantityUnit}
         </div>
         <div className="case-card-description">{info.description}</div>
       </div>
