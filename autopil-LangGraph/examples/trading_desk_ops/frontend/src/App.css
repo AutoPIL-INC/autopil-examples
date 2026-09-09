@@ -955,3 +955,93 @@
   transform: none;
   box-shadow: none;
 }
+
+/* ── domain badge — distinguishes an Equities case from a Fixed Income case in the
+   case queue and the static case grid, since both sub-domains now share one queue ── */
+.domain-badge {
+  display: inline-block;
+  align-self: flex-start;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.domain-badge-equities {
+  color: var(--accent);
+  background: rgba(0, 204, 221, 0.12);
+}
+
+.domain-badge-fixed_income {
+  color: var(--yellow);
+  background: rgba(245, 166, 35, 0.14);
+}
+
+/* Same badge, smaller and inline — used next to a role name in the Description tab's
+   flow diagram to mark a domain-specific (not shared) role. */
+.flow-domain-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.flow-domain-tag-eq {
+  color: var(--accent);
+  background: rgba(0, 204, 221, 0.12);
+}
+
+.flow-domain-tag-fi {
+  color: var(--yellow);
+  background: rgba(245, 166, 35, 0.14);
+}
+
+/* ── break-kind badge — Fixed Income introduces two mechanisms (a cash break, a
+   proactive pool-notification deadline escalation) that are mechanically different
+   from a quantity/SSI break or a reactive fails-to-deliver investigation; this badge
+   keys off classifyProposedAction() (types.ts) so the live feed and review panel never
+   render them identically to each other. ─────────────────────────────────────────── */
+.break-kind-note {
+  margin: 6px 0;
+}
+
+.break-kind-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(122, 154, 181, 0.12);
+}
+
+.break-kind-badge.break-kind-cash_break,
+.break-kind-badge.break-kind-pool_notification_risk {
+  color: var(--yellow);
+  background: rgba(245, 166, 35, 0.14);
+}
+
+.break-kind-badge.break-kind-fails_to_deliver_fi,
+.break-kind-badge.break-kind-fails_to_deliver_eq {
+  color: var(--red);
+  background: rgba(244, 81, 108, 0.14);
+}
+
+.break-kind-proactive {
+  font-size: 12px;
+  color: var(--yellow);
+  font-style: italic;
+  margin: 4px 0;
+}

@@ -979,3 +979,230 @@
   transform: none;
   box-shadow: none;
 }
+
+/* ── trading_desk_ops two-tier review, skip rows, and regulation grounding ──────────
+   Backfilled 2026-09-09: these selectors existed in
+   examples/trading_desk_ops/frontend/src/App.css from the original Equities build
+   but were never copied here, so the shared multi-demo frontend's trading_desk_ops
+   tab rendered tier badges, skip rows, and regulation cards completely unstyled —
+   caught while verifying the Fixed Income frontend build, not introduced by it. */
+.review-notes-hint {
+  font-size: 12px;
+  color: var(--red);
+  margin-top: 6px;
+}
+
+.review-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tier-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  margin: 6px 0;
+  text-transform: uppercase;
+}
+
+.tier-badge.tier1 {
+  color: var(--accent);
+  background: rgba(0, 204, 221, 0.12);
+}
+
+.tier-badge.tier2 {
+  color: var(--red);
+  background: rgba(244, 81, 108, 0.14);
+}
+
+/* Tier 1 (ops-analyst) reads as the routine case — accent border, not red, so a
+   viewer can tell at a glance which tier a case escalated to before reading any
+   text. Tier 2 (compliance-officer) keeps the stronger red treatment every other
+   demo's single-tier review panel already uses. */
+.review-panel.tier1 {
+  border-color: var(--accent);
+  background: rgba(0, 204, 221, 0.06);
+}
+
+.review-panel.tier2 {
+  border-color: var(--red);
+  background: rgba(244, 81, 108, 0.08);
+}
+
+/* A role the orchestrator's classification determined is genuinely not applicable to
+   this trigger (e.g. order_intake_agent on a pm_rebalance trigger) — muted/dashed so
+   it reads as "deliberately excluded," not a step that ran and produced nothing. */
+.feed-row.skipped {
+  border-bottom-style: dashed;
+}
+
+.feed-row.skipped .feed-badge {
+  color: var(--muted);
+  background: rgba(122, 154, 181, 0.14);
+}
+
+.feed-row.skipped .feed-body {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Which regulation grounds a denial or an escalated tier — shown inline, right
+   beneath the denial reason or disposition banner, so a viewer doesn't have to cross-
+   reference the Description tab's compliance table to see why a boundary is real. */
+.feed-regulation {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.feed-regulation .regulation-id {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* ── regulations / compliance framework table ───────────────────── */
+.regulation-table {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.regulation-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 12px 16px;
+}
+
+.regulation-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.regulation-card-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.regulation-rule {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.regulation-rule:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.regulation-rule-text {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.regulation-rule-enforced {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+/* ── domain badge — distinguishes an Equities case from a Fixed Income case in the
+   case queue and the static case grid, since both sub-domains now share one queue ──
+   (trading_desk_ops only, but lives in the shared stylesheet like everything else here) */
+.domain-badge {
+  display: inline-block;
+  align-self: flex-start;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.domain-badge-equities {
+  color: var(--accent);
+  background: rgba(0, 204, 221, 0.12);
+}
+
+.domain-badge-fixed_income {
+  color: var(--yellow);
+  background: rgba(245, 166, 35, 0.14);
+}
+
+/* Same badge, smaller and inline — used next to a role name in the Description tab's
+   flow diagram to mark a domain-specific (not shared) role. */
+.flow-domain-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.flow-domain-tag-eq {
+  color: var(--accent);
+  background: rgba(0, 204, 221, 0.12);
+}
+
+.flow-domain-tag-fi {
+  color: var(--yellow);
+  background: rgba(245, 166, 35, 0.14);
+}
+
+/* ── break-kind badge — Fixed Income introduces two mechanisms (a cash break, a
+   proactive pool-notification deadline escalation) that are mechanically different
+   from a quantity/SSI break or a reactive fails-to-deliver investigation; this badge
+   keys off classifyProposedAction() (types.ts) so the live feed and review panel never
+   render them identically to each other. ─────────────────────────────────────────── */
+.break-kind-note {
+  margin: 6px 0;
+}
+
+.break-kind-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(122, 154, 181, 0.12);
+}
+
+.break-kind-badge.break-kind-cash_break,
+.break-kind-badge.break-kind-pool_notification_risk {
+  color: var(--yellow);
+  background: rgba(245, 166, 35, 0.14);
+}
+
+.break-kind-badge.break-kind-fails_to_deliver_fi,
+.break-kind-badge.break-kind-fails_to_deliver_eq {
+  color: var(--red);
+  background: rgba(244, 81, 108, 0.14);
+}
+
+.break-kind-proactive {
+  font-size: 12px;
+  color: var(--yellow);
+  font-style: italic;
+  margin: 4px 0;
+}

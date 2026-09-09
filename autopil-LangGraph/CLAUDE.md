@@ -94,31 +94,50 @@ as a whole.
   hand-syncing if either copy ever needs to change). See its
   [DESIGN.md](./examples/quality_control/DESIGN.md) and
   [README.md](./examples/quality_control/README.md).
-- `examples/trading_desk_ops/` — 7 roles (`trading_ops_orchestrator`,
-  `order_intake_agent`, `allocation_agent`, `affirmation_matching_agent`,
-  `settlement_reconciliation_agent`, `exception_investigation_agent`,
-  `compliance_reporting_agent`) governing a block equity order (a distinct ticker per
-  scenario — MSFT, NVDA, AAPL, AMZN, GOOG) at Meridian
-  Bank's Trading Unit — allocation, same-day affirmation, DTCC/NSCC settlement
-  verification, and exception investigation, inside a T+1 window. First of a planned
-  5-sub-domain build (`/TRADING_OPS_ROADMAP.md`; only the Equities sub-domain is
-  built so far) — `TRADING_DOMAINS` is shaped so FX/Commodities/Fixed Income/
-  International can be added later as sibling entries without restructuring the
-  graph, same relationship `institutional_portfolio_review`'s `REVIEW_TYPES` has to
-  its own workflow types. Two departures from every prior demo: the orchestrator's
-  trigger classification is a genuinely dynamic LLM call (not a fixed first step,
-  unlike `quality_control`), and `decision_node` routes to one of **two** human
-  review tiers (ops-analyst vs. compliance-officer) based on real underlying
-  fixture data, not the case ID. No existing autopil policy stub matched this
-  domain — designed from scratch, though its `regulations:` metadata-block
-  convention was borrowed from `policies/financial_services/
-  clearing_settlement.yaml`. Its own module is `trading_desk_ops_data.py`, checked
-  against every existing demo's module names before being added. Has its own
-  standalone `frontend/`, mirroring `quality_control/frontend/`'s structure, and is
-  also wired into the shared `frontend/src/demos/trading_desk_ops/` (see that
-  directory's note below on hand-syncing if either copy ever needs to change). Optional
-  hosted SaaS trial mode, added after the initial round (see its DESIGN.md's "Appendix:
-  hosted trial mode" and `trading_desk_ops_saas_guard.py`). See its
+- `examples/trading_desk_ops/` — 8 roles (`trading_ops_orchestrator`,
+  `order_intake_agent`, `allocation_agent`, `instrument_classification_agent`,
+  `affirmation_matching_agent`, `settlement_reconciliation_agent`,
+  `exception_investigation_agent`, `compliance_reporting_agent`) governing two
+  sub-domains at Meridian Bank's Trading Unit: Equities (a block equity order — a
+  distinct ticker per scenario, MSFT/NVDA/AAPL/AMZN/GOOG — through allocation,
+  same-day affirmation, DTCC/NSCC settlement verification, and exception
+  investigation, inside a T+1 window) and Fixed Income (a fixed income trade — a
+  distinct instrument per scenario, a corporate bond/an agency MBS TBA pool/two
+  Treasury notes — through instrument classification, same-day affirmation including
+  day-count/accrued-interest cash-break detection, FICC GSD/MBSD settlement
+  verification including TBA pool-notification deadline risk, and exception
+  investigation including FICC's Fails Charge Trading Practice penalty). Two of a
+  planned 5-sub-domain build (`/TRADING_OPS_ROADMAP.md`; FX/Commodities/International
+  remain unbuilt) — `TRADING_DOMAINS` is shaped so they can be added later as sibling
+  entries without restructuring the graph, same relationship
+  `institutional_portfolio_review`'s `REVIEW_TYPES` has to its own workflow types;
+  Fixed Income is the first domain to actually exercise that extensibility (see its
+  own CLAUDE.md section below and DESIGN.md §4 for exactly what had to generalize —
+  `orchestrator_review_node`'s candidate list and re-routing prompt, `build_graph()`'s
+  node/edge set, `_reset_sessions()` — vs. what didn't:
+  `trading_ops_orchestrator_node`'s classification call itself needed no changes,
+  since `domain` was already an LLM-reasoned field, not a fixed harness-level
+  selection). `allocation_agent` is Equities-only; `instrument_classification_agent`
+  is Fixed-Income-only — each domain's `specialist_roles` differs by exactly the one
+  role that domain's own workflow doesn't share with the other. Two departures from
+  every prior demo, both present since the Equities build: the orchestrator's trigger
+  classification is a genuinely dynamic LLM call (not a fixed first step, unlike
+  `quality_control`), and `decision_node` routes to one of **two** human review tiers
+  (ops-analyst vs. compliance-officer) based on real underlying fixture data, not the
+  case ID — extended for Fixed Income with two more real fixture-grounded signals
+  (a pool-notification deadline field, a Fails-Charge-applicable field) on the same
+  two tiers. No existing autopil policy stub matched this domain — designed from
+  scratch, though its `regulations:` metadata-block convention was borrowed from
+  `policies/financial_services/clearing_settlement.yaml`. Its own module is
+  `trading_desk_ops_data.py`, checked against every existing demo's module names
+  before being added. Has its own standalone `frontend/`, mirroring
+  `quality_control/frontend/`'s structure, and is also wired into the shared
+  `frontend/src/demos/trading_desk_ops/` (see that directory's note below on
+  hand-syncing if either copy ever needs to change) — **frontend still covers
+  Equities only as of this round; Fixed Income was added backend-only, a separate
+  follow-up task extends the frontend**. Optional hosted SaaS trial mode, added after
+  the initial round (see its DESIGN.md's "Appendix: hosted trial mode" and
+  `trading_desk_ops_saas_guard.py`). See its
   [DESIGN.md](./examples/trading_desk_ops/DESIGN.md) and
   [README.md](./examples/trading_desk_ops/README.md).
 - `frontend/` — a tenth, **additive** frontend covering every demo from one
@@ -608,9 +627,11 @@ as a whole.
 
 - Follows `fraud_investigation`'s architecture (LLM-driven orchestrator routing,
   `orchestrator_review_node` re-routing loop, rule-based `decision_node` + human
-  `interrupt()`) — moved into Financial Services' trading-operations surface, first
-  of a planned 5-sub-domain build (see `/TRADING_OPS_ROADMAP.md`). Only the Equities
-  sub-domain is built this round.
+  `interrupt()`) — moved into Financial Services' trading-operations surface, two of a
+  planned 5-sub-domain build (see `/TRADING_OPS_ROADMAP.md`). Equities was built
+  first; Fixed Income was added second, extending the same graph/policy rather than
+  duplicating it — see the Fixed Income-specific bullets below. FX/Commodities/
+  International remain unbuilt.
 - **`trading_ops_orchestrator`'s classification step is genuinely dynamic, not a
   fixed first step** — a deliberate departure from `quality_control`'s
   `defect_detection_agent`-always-first design. It classifies the incoming trigger
@@ -621,26 +642,73 @@ as a whole.
   the PM's system already produced structured data with nothing to parse. Verified
   live that EQ-004's actual graph path differs from EQ-001's, not just that both
   complete — see its DESIGN.md §10.
-- **Extensible domain registry, not a new example per sub-domain.**
-  `TRADING_DOMAINS` mirrors `institutional_portfolio_review`'s `REVIEW_TYPES` shape —
-  one dict keyed by sub-domain (`specialist_roles` / `first_step_by_trigger` /
-  `skip_by_trigger`), with only `"equities"` populated. A future PR adds `"fx"` /
-  `"commodities"` / `"fixed_income"` / `"international"` as sibling entries and their
-  own specialist node functions, without restructuring `build_graph()` or
-  `trading_ops_orchestrator_node`'s classification call itself (whose `domain` enum
-  already reads off `list(TRADING_DOMAINS.keys())`). See its DESIGN.md §4.
-- **Two-tier human review — new mechanism, not present in any other demo in this
-  repo.** `decision_node` classifies severity from real underlying fixture data (an
-  actual `inventory_shortfall` field, an actual `ssi_stale`/`break_type` field) —
-  never any role's self-reported finding, never a `case_id -> tier` lookup — and
-  routes the `interrupt()` to one of two reviewer tiers: Tier 1 (ops-analyst, routine
-  corrections — EQ-002/EQ-003) or Tier 2 (compliance-officer, escalated
-  settlement-risk events — EQ-005, invoking Reg SHO locate-requirement logic). The
-  interrupt payload carries `tier`/`tier_label` explicitly so a future frontend can
-  render a different reviewer form per tier. A written note is required on BOTH
-  approve and override, on BOTH tiers — same confirmed-effective UX choice
-  `quality_control`'s `decision_node` established for one tier, applied here across
-  two.
+- **Extensible domain registry, not a new example per sub-domain — confirmed to
+  actually work, not just declared, once a second domain landed.** `TRADING_DOMAINS`
+  mirrors `institutional_portfolio_review`'s `REVIEW_TYPES` shape — one dict keyed by
+  sub-domain (`specialist_roles` / `first_step_by_trigger` / `skip_by_trigger` /
+  `review_guidance`), now with `"equities"` AND `"fixed_income"` populated. Adding
+  Fixed Income required generalizing 3 spots that were hardcoded to Equities:
+  `orchestrator_review_node`'s `remaining` candidate list (was
+  `EQUITIES_SPECIALIST_ROLES`, now `TRADING_DOMAINS[state["domain"]]["specialist_roles"]`),
+  its re-routing prompt's "normal order" guidance (pulled into each domain's own
+  `review_guidance` string), and `_reset_sessions()` (was a hardcoded equities-only
+  list, now iterates `AGENT_IDS` — every registered role, across every domain).
+  `build_graph()` itself needed no edge restructuring — it wires
+  `ALL_SPECIALIST_ROLES` (the union of every populated domain's `specialist_roles`) as
+  static nodes, and `trading_ops_orchestrator_node`'s classification call needed zero
+  changes, since `domain` was already an LLM-reasoned field reading off
+  `list(TRADING_DOMAINS.keys())`, not a fixed harness-level selection. A future PR
+  adds `"fx"` / `"commodities"` / `"international"` as sibling entries and their own
+  specialist node functions the same way. See DESIGN.md §4.
+- **Two-tier human review — new mechanism when Equities shipped it, extended (not
+  restructured) for Fixed Income.** `decision_node` classifies severity from real
+  underlying fixture data — never any role's self-reported finding, never a
+  `case_id -> tier` lookup — and routes the `interrupt()` to one of two reviewer
+  tiers: Tier 1 (ops-analyst, routine corrections and proactive escalations —
+  EQ-002/EQ-003/FI-003/FI-004) or Tier 2 (compliance-officer, escalated
+  settlement-risk events — EQ-005 invoking Reg SHO locate-requirement logic, FI-005
+  invoking FICC's named Fails Charge Trading Practice penalty instead, same tier,
+  different named mechanism). Fixed Income added two more `elif` branches to the same
+  function — a `pool_notification_data.deadline_at_risk` check (FI-004, fires before
+  any fail) and a `fails_charge_data.fails_charge_applicable` check (FI-005, picks the
+  Fails-Charge-flavored proposed-action text on the same `inventory_shortfall > 0`
+  branch EQ-005 established) — without changing the function's shape. The interrupt
+  payload carries `tier`/`tier_label` explicitly so a future frontend can render a
+  different reviewer form per tier. A written note is required on BOTH approve and
+  override, on BOTH tiers — same confirmed-effective UX choice `quality_control`'s
+  `decision_node` established for one tier, applied here across two.
+- **Fixed Income's three new mechanisms** (see `/TRADING_OPS_ROADMAP.md`'s
+  "Sub-domain 2" section for the design source of truth): (1) **two distinct break
+  types** — `affirmation_matching_agent`'s existing quantity/SSI break (equities) and
+  a new day-count/accrued-interest CASH break (`AFFIRMATION_RESULTS.break_type ==
+  "cash_break"`, FI-003), grounded in a real `DAY_COUNT_REFERENCE` lookup table
+  (Actual/Actual for Treasuries, 30/360 for corporate/municipal/agency MBS), a
+  genuinely different fixture field from `"ssi_error"`/`"timing_lag"`, not a
+  relabeling; (2) **a proactive deadline escalation** — `POOL_NOTIFICATION_DATA`'s
+  48-hour Pass-Thru Notification cutoff tracker (FI-004), checked in `decision_node`
+  BEFORE any break-type check, so it fires on a deadline at risk before a fail
+  happens, not as a reactive investigation; (3) **the FICC Fails Charge Trading
+  Practice regime** — `FAILS_CHARGE_DATA` (FI-005), this domain's own named penalty
+  mechanism in place of Reg SHO (which doesn't apply to Treasury/Agency MBS
+  settlement at all — every FI-### case's `REG_SHO_LOCATE_DATA` entry carries an
+  explicit "not applicable" stub rather than silently allowing the equities-only
+  mechanism to leak in).
+- **The one new role, `instrument_classification_agent`** (Fixed Income only) —
+  resolves instrument type (Treasury / corporate / municipal / agency MBS-TBA) from
+  CUSIP/security-master reference data into the settlement cycle and day-count
+  convention. FI-002 is what happens when this goes wrong: an FNMA ticket the desk
+  describes as "a Fannie Mae note, standard T+1 settlement" resolves via CUSIP lookup
+  as an Agency MBS TBA pool instead — a different clearing corp (FICC MBSD, not DTCC)
+  and settlement calendar (a fixed monthly SIFMA date, not T+1). Same denial shape as
+  `order_intake_agent`'s over-scope tools (client account/position/pricing data), and
+  its own `max_sensitivity: low` — its only real source, `security_master`, is rated
+  `low`, so the ceiling was set to match it exactly rather than inherited from a
+  sibling role, per the task_bindings/sensitivity-ceiling discipline below.
+  `SECURITY_MASTER` itself is EXTENDED with CUSIP-keyed bond entries alongside its
+  existing ticker-keyed equity entries — same dict, same getter, no new source; the
+  5 genuinely new sources (`day_count_reference`, `ficc_gsd_data`, `ficc_mbsd_data`,
+  `pool_notification_data`, `fails_charge_data`) were added only because no existing
+  schema fit, per the same "extend, don't invent" discipline.
 - **No existing autopil policy stub matched this domain** — designed from scratch
   (unlike `hospital_revenue_cycle`/`care_coordination`/`quality_control`, each
   adapted from a real stub in the sibling `autopil` repo).
@@ -657,6 +725,14 @@ as a whole.
   DESIGN.md §6 established after this exact bug class recurred in
   `aml_compliance`/`hospital_revenue_cycle`/`care_coordination`. No task_bindings/
   sensitivity-ceiling bug was found here — see DESIGN.md §11 for the full cross-check.
+  **Re-run for Fixed Income's additions before its first live run too** — every new
+  `(source, task_type)` pair (`day_count_reference`/`ficc_gsd_data`/`ficc_mbsd_data`/
+  `pool_notification_data`/`fails_charge_data` against `trade_matching`/
+  `settlement_verification`/`break_triage`/`instrument_classification`) checked
+  against `trading_desk_ops.yaml`'s expanded `task_bindings`, and
+  `instrument_classification_agent`'s `max_sensitivity: low` checked against its one
+  real source (`security_master`, rated `low`) — no mismatch found here either, see
+  DESIGN.md §11a.
 - **A real bug caught during verification — in the prompt design, not the policy.**
   The first live run showed `affirmation_matching_agent` checking only
   quantity/price (`trade_capture` vs `counterparty_records`) and self-reporting a
@@ -690,11 +766,12 @@ as a whole.
 - **Optional hosted AutoPIL SaaS trial mode**, added after the initial round, same
   auto-detect/`RemoteContextGuard` design as the other 5 demos — see
   `trading_desk_ops_saas_guard.py` and DESIGN.md's "Appendix: hosted trial mode". None
-  of this demo's 7 role names matched any pre-seeded policy on the shared trial
+  of this demo's role names matched any pre-seeded policy on the shared trial
   tenant (confirmed live via `GET /v1/policies`, 112 policies checked, zero matches),
   same situation `institutional_portfolio_review`/`splunk_secops` hit — so
-  `trading_desk_ops_demo.py` calls `ensure_policy()` to create 7 dedicated
-  `demo_tdo_<role>_policy` policies, translated field-for-field from
+  `trading_desk_ops_demo.py` calls `ensure_policy()` to create dedicated
+  `demo_tdo_<role>_policy` policies (one per role, including
+  `instrument_classification_agent`), translated field-for-field from
   `trading_desk_ops.yaml` (including folding each regulation's `applicable_rules` into
   whichever policy its own `how_enforced` text names — `CreatePolicyRequest` now has
   a `regulations` field, confirmed live against the OpenAPI schema, a genuine schema
@@ -706,12 +783,20 @@ as a whole.
   denied remotely; `GET /v1/audit/sessions/{id}` with the Admin key read both audit
   trails back correctly. **Known gap, front and center because it's an active local
   mechanism, not a hypothetical one**: this demo's `trading_desk_ops.yaml` sets
-  `session_ttl_minutes: 1440` (24-hour cap) on all 7 roles — confirmed live against
+  `session_ttl_minutes: 1440` (24-hour cap) on every role — confirmed live against
   the real OpenAPI schema and an actual returned policy object that
   `CreatePolicyRequest`/the hosted policy object has no `session_ttl_minutes` (or
   `permitted_agent_ids`/`sensitivity_decay`) field at all, so that 24-hour cap is
   **not enforceable the same way remotely** — hosted mode is additive, not a
-  replacement for local enforcement.
+  replacement for local enforcement. **A separate, pre-existing environment issue
+  found while adding Fixed Income, unrelated to this sub-domain's own build**: in this
+  repo's current environment, `bootstrap_agents()` fails with `409 Conflict` on
+  `POST /v1/agents` even for the original, unmodified Equities-only code (confirmed by
+  re-running the exact pre-Fixed-Income file with the same env) — the shared trial
+  tenant's agent-role registration has drifted from a clean state independent of
+  anything in this round's change. Local mode (unset `AUTOPIL_ADMIN_KEY`/
+  `AUTOPIL_EVALUATE_KEY`) is unaffected and is what this round's own verification
+  used — see DESIGN.md §11a.
 - **Has its own standalone `examples/trading_desk_ops/frontend/`** — same
   Vite + React + TypeScript structure as `quality_control/frontend/`, minus the
   MCP/audit-source-choice second interrupt (this demo has only the one disposition

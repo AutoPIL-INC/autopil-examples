@@ -147,18 +147,36 @@ class RemoteContextGuard:
 
 
 def ensure_policy(base_url: str, admin_key: str, name: str, agent_role: str, spec: dict) -> None:
-    """Idempotently ensure a policy named `name` exists on the hosted tenant,
-    creating it via POST /v1/policies if missing. Existing policies are left as-is —
-    call sites should pick a name unlikely to collide with a pre-seeded one (e.g. the
-    "demo_tdo_" prefix this demo uses) if they need guaranteed content, since this
-    function only checks for a name match, not content equality.
+    """Idempotently ensure a policy named `name` exists on the hosted tenant AND that
+    its content matches `spec`, creating it via POST /v1/policies if missing or
+    updating it via PUT /v1/policies/{policy_id} if it exists but has drifted.
+
+    Real gap caught live, 2026-09-08: this function used to be create-only ("existing
+    policies are left as-is"), which meant a hosted policy created before a local
+    trading_desk_ops.yaml change went silently stale. Confirmed directly: the Fixed
+    Income extension added `day_count_reference` to affirmation_matching_agent's
+    trade_matching task, `trace_compilation` to compliance_reporting_agent's allowed
+    tasks, and several FICC/pool-notification/fails-charge sources to
+    settlement_reconciliation_agent's and exception_investigation_agent's task
+    bindings — none of that reached the hosted tenant, since those 4 policies were
+    already created back when this demo only had Equities. Running the full 10-case
+    EQ+FI suite in hosted mode surfaced real denials on legitimate FI-### calls
+    ("Task 'trade_matching' is not permitted to access source 'day_count_reference'",
+    "Task 'trace_compilation' is not in the allowed task list for role
+    'compliance_reporting_agent'") that the local policy explicitly grants —
+    disposition still came out correct in every case since decision_node is grounded
+    in raw fixture data, never a role's own tool-call success, but this meant those
+    specific tool calls were needlessly denied under hosted mode until refreshed.
 
     `spec` is passed straight through as the rest of CreatePolicyRequest's body
     (allowed_sources/denied_sources/allowed_tasks/denied_tasks/max_sensitivity/
     task_bindings/require_task_for_sensitivity/description/regulations/...) — no
     permitted_agent_ids, session_ttl_minutes, or sensitivity_decay field exists on
     this endpoint, confirmed against the real OpenAPI schema for this demo
-    specifically, not assumed from an earlier demo's check.
+    specifically, not assumed from an earlier demo's check. The update path compares
+    only the fields `spec` actually sets against the existing policy's own values —
+    fields the hosted API tracks that aren't part of `spec` (version, timestamps,
+    agents_using_this_policy, enforcement_stats, ...) are never touched.
     """
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
     existing_resp = client.get("/v1/policies")
@@ -167,10 +185,14 @@ def ensure_policy(base_url: str, admin_key: str, name: str, agent_role: str, spe
             f"AutoPIL API error listing policies ({existing_resp.status_code}): "
             f"{existing_resp.text} — check AUTOPIL_ADMIN_KEY in .env"
         )
-    if any(p.get("name") == name for p in existing_resp.json()):
+    existing = next((p for p in existing_resp.json() if p.get("name") == name), None)
+    if existing is None:
+        resp = client.post("/v1/policies", json={"name": name, "agent_role": agent_role, **spec})
+        resp.raise_for_status()
         return
-    resp = client.post("/v1/policies", json={"name": name, "agent_role": agent_role, **spec})
-    resp.raise_for_status()
+    if any(existing.get(k) != v for k, v in spec.items()):
+        resp = client.put(f"/v1/policies/{existing['policy_id']}", json={"agent_role": agent_role, **spec})
+        resp.raise_for_status()
 
 
 def hosted_spec_from_local_policy(policy: dict, regulations: list) -> dict:
@@ -240,13 +262,31 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
     evaluate endpoint's role-scan fallback — risky on a shared trial tenant where
     more than one policy can share an agent_role). Returns {agent_role: agent_id}.
 
-    Reuses an existing agent (matching agent_role + owner_tag) if one's already
-    registered from a prior run/process, rather than creating a new one every time —
-    approves it first if it's still in "draft". `owner_tag` (stored in the `owner`
-    field) is purely this lookup key, distinct from `owner_team` — the actual
-    business-accountable team — which is kept in sync via PUT on every call if it's
-    out of date, including on agents that were registered before this parameter
-    existed.
+    Real incident, 2026-09-08/09, in two parts. This demo's 7 original (Equities)
+    agents were registered under owner="Trading-Desk-Ops" — missing the "-team"
+    suffix this code actually queried by ("Trading-Desk-Ops-team") at the time — a
+    literal drift from the original hosted-mode build. The then-current owner-scoped
+    GET found nothing, so bootstrap_agents() tried to recreate every role and got 409
+    Conflict on all 7, taking down langgraph dev's ENTIRE startup (every graph in
+    langgraph.json, not just this one) — module-level bootstrap_agents() calls run at
+    graph-import time. The same bug class hit fraud_investigation the same day, and a
+    first-pass fix there made the 409 path self-heal `owner` back to `owner_tag` —
+    which would have silently reverted a deliberate dashboard edit on every
+    subsequent run had anyone made one. Wrong mechanism: `owner` should be a pure
+    business/display field a human can edit freely, not something the code depends
+    on to find its own agents.
+
+    The actual fix: `owner` is no longer used for lookup at all. Agent identity is
+    tracked via a small local JSON cache (`.trading_desk_ops_agent_ids.json`,
+    gitignored) mapping role -> agent_id. A cache hit is confirmed with a direct
+    `GET /v1/agents/{id}` (self-heals via rediscovery if that specific agent was ever
+    deleted). A cache miss searches by `agent_role` alone, tenant-wide; `owner_tag` is
+    used only as a soft tie-breaking hint on an ambiguous multi-match, never as a hard
+    filter. `owner`/`owner_team` are written once, at creation, and never touched
+    again by this function — editing either directly in the AutoPIL dashboard is safe
+    going forward. (`ensure_policy()` above has its own, separate diff-and-update fix
+    for a different staleness issue — hosted *policies* going stale relative to local
+    YAML — unrelated to this agent-lookup mechanism.)
     """
     cache = _load_agent_id_cache()
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)

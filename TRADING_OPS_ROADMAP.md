@@ -1,10 +1,14 @@
 # Trading Desk Ops — Planning Doc
 
-**Status: pre-implementation.** Nothing here is built yet — no example directory,
-no policy YAML, no code. This captures the design discussion so it doesn't need to be
-re-derived when the build starts. Once Equities is actually built, this doc's Equities
-section should be superseded by that example's own `DESIGN.md`, and this file kept for
-the remaining four sub-domains until they're built too.
+**Status: Equities and Fixed Income built** (`examples/trading_desk_ops/`). Equities:
+backend, frontend, and hosted SaaS trial mode all live (PR #5). Fixed Income: backend
+only so far (extending the same graph/policy, not a new example) — frontend and
+hosted-mode coverage for it are a separate follow-up task. Both sub-domains' full
+design detail now lives in that example's own `DESIGN.md`, not here — see the short
+pointer below instead of a duplicate; the "Sub-domain 2 (next build)" section below is
+kept as the original build sketch, superseded by `DESIGN.md` now that it's built. FX,
+Commodities, and International remain at the pain-scenario-menu level until it's
+their turn.
 
 ## Decisions
 
@@ -61,87 +65,105 @@ where every case started identically and a fixed graph edge was the right call):
 The actual settlement release, allocation finalization, or break resolution stays
 rule-based/grounded plus human `interrupt()` sign-off, same as every existing demo.
 
-## Sub-domain 1 (first build): Equities
+## Sub-domain 1 (built): Equities
 
-`examples/trading_desk_ops/`, Meridian Bank's Trading Unit. Trigger: an external
-client places a 10,000-share MSFT order. Internally this fans out into allocation
-across sub-accounts, same-day affirmation, DTCC settlement verification, and (when
-something breaks) exception handling — inside a T+1 window.
+`examples/trading_desk_ops/` — see that example's own `DESIGN.md` for full detail
+(roles, compliance table, EQ-001..005 scenarios, two-tier human review, hosted SaaS
+trial mode). Summary: an external client's 10,000-share block order fans out into
+allocation across sub-accounts, same-day affirmation, DTCC settlement verification,
+and (when something breaks) exception handling, inside a T+1 window.
+`trading_ops_orchestrator`'s classification step doubles as the sub-domain router —
+for Equities it only ever resolves to `"equities"`, but the same call is where Fixed
+Income and the rest plug in as additional branches in `TRADING_DOMAINS`.
 
-`trading_ops_orchestrator`'s classification step doubles as the future sub-domain
-router: for this first build it only ever resolves to Equities, but the same
-classification call is where FX/Commodities/Fixed Income/International plug in later
-as additional branches, each with their own specialist chain below the fold.
+## Sub-domain 2 (next build): Fixed Income
 
-### Roles
+Unlike Equities, this sub-domain adds a second axis of complexity: **instrument
+classification determines the settlement cycle itself**, not just the workflow path.
+A Treasury, a corporate bond, and an agency MBS traded TBA (To-Be-Announced) settle on
+three different calendars (T+1, T+1, and a fixed monthly SIFMA date respectively),
+cleared through different clearing corporations (FICC's GSD for Treasuries, DTCC for
+corporates, FICC's MBSD for agency MBS). Misclassifying the instrument doesn't just
+risk a wrong workflow — it computes an actually wrong settlement date.
+
+Three mechanisms this sub-domain introduces that Equities didn't need:
+
+- **Two distinct break types, not one.** Equities only had quantity/SSI mismatches.
+  Fixed income adds **cash breaks** — the settlement amount itself (principal +
+  accrued interest) can be wrong because the day-count convention was misapplied
+  (Treasuries use Actual/Actual, corporates typically use 30/360) even when quantity
+  and counterparty match perfectly.
+- **A deadline that hasn't happened yet, not just a break that already has.** TBA
+  agency MBS has a hard 48-hour pool-notification cutoff before the SIFMA settlement
+  date, via FICC's Pass-Thru Notification (PTN) system. This is a proactive
+  time-window escalation, not a reactive break investigation — genuinely different
+  from every scenario in Equities.
+- **A named, real financial penalty regime for the worst case.** Treasury settlement
+  fails trigger FICC's actual **Fails Charge Trading Practice** (a specific
+  formula-based penalty on failed Treasury/Agency MBS settlements) — sharper
+  regulatory grounding than Equities' EQ-005 had.
+
+### Roles (Equities' 7, plus one genuinely new one)
+
+Same shape as Equities — orchestrator + specialists, dynamic classification, two-tier
+review — plus:
 
 | Role | Reads | Denied | Notable mechanism |
 |---|---|---|---|
-| `trading_ops_orchestrator` | `case_metadata`, `agent_outputs` | every raw trade/position/settlement source | Genuinely LLM-driven classification of the trigger (new order / amendment / cancellation / PM rebalance / corporate-action trade) — not a fixed first step. Re-routes among specialists based on findings. |
-| `order_intake_agent` | raw instruction (email/FIX text), security master reference data | client account data, position data, pricing/commission data | Parses into a structured trade ticket; flags potential short-sale status for Reg SHO relevance. Runs only on the new-order/amendment path — a rebalance trigger skips it since the PM's system already produced structured data. |
-| `allocation_agent` | client account/position data *for accounts in this block only*, investment-restriction/mandate data | pricing, commission, other blocks' allocations, other clients' positions | Splits the order across sub-accounts respecting concentration limits and client restrictions. Boundary grounded in SEC Rule 15c3-3 — one client's allocation must never be visible to another, even internally. |
-| `affirmation_matching_agent` | trade capture, custodian/counterparty records, standing settlement instructions (SSI) | client PII beyond account/SSI reference, pricing, commission | Matches internal capture vs. counterparty record same-day, per SEC Rule 15c6-2. A mismatch is a flag, never a unilateral fix. |
-| `settlement_reconciliation_agent` | DTCC/NSCC CNS net settlement data, internal position ledger | desk P&L, commissions, unrelated client orders | Verifies the firm's net settlement obligation against internal books. A break here is a potential fails-to-deliver risk, not cosmetic. |
-| `exception_investigation_agent` | whatever's relevant to the specific flagged break (widest reasoning scope, scoped per-break not blanket) | — | Triages: timing lag, data/SSI error, genuine fails-to-deliver risk, or manipulation-flavored anomaly. Proposes a resolution; cannot execute one. |
-| `compliance_reporting_agent` | `agent_outputs` only | every raw source | Compiles the FINRA CAT-style audit record — same "never touches a raw source, compiles from outputs" pattern every orchestrator/compiler role in this repo uses. |
+| `instrument_classification_agent` *(new)* | security master / CUSIP reference data | client account/position data, pricing, commission | Resolves instrument type (Treasury / corporate / municipal / agency MBS-TBA) into the correct settlement cycle and day-count convention. Everything downstream depends on this being right — FI-002 is what happens when it isn't. |
 
-### Compliance framework grounding each boundary
+The other 6 roles (`fixed_income_ops_orchestrator`, and Fixed-Income-flavored versions
+of `affirmation_matching_agent`, `settlement_reconciliation_agent`,
+`exception_investigation_agent`, `compliance_reporting_agent`, plus a settlement-amount
+calculation role) carry over Equities' shape — full allowed/denied source detail to be
+finalized at build time, same as Equities' worked example was before its own build.
 
-| Regulation / mechanism | What it requires | Which agent/boundary it grounds |
-|---|---|---|
-| SEC Rule 15c6-1 | T+1 settlement cycle (effective May 2024) | The whole pipeline's time pressure — no scenario has slack for manual exception handling |
-| SEC Rule 15c6-2 | Same-day affirmation (SDA) mandate for institutional trades | `affirmation_matching_agent` must complete same trade-date |
-| DTCC/NSCC CNS (Continuous Net Settlement) | Firm's netted settlement obligation vs. internal books | `settlement_reconciliation_agent`'s core check; a mismatch is EQ-005's fails-to-deliver scenario |
-| SEC Rule 15c3-3 (Customer Protection Rule) | Client assets/positions must stay segregated | `allocation_agent`'s hard boundary — one client's allocation invisible to any agent not handling that client |
-| Reg SHO | Locate requirement before executing a short sale | `order_intake_agent`'s short-sale flag; escalation trigger in EQ-005 if inventory can't cover the obligation |
-| FINRA CAT (Consolidated Audit Trail) | Every order event (receipt, route, modify, cancel, execute) reported with timestamps | `compliance_reporting_agent`'s final compile — maps directly onto AutoPIL's own tamper-evident audit log |
-| SEC Rule 17a-4 | WORM recordkeeping for broker-dealers | The audit trail itself |
-| Information barriers / MNPI policy | Trading-side agents must not access research/banking-side or other-desk data | Grounds the EQ-003 over-scope denial — a real regulatory reason, not an arbitrary rule |
-| FINRA Rule 5310 (Best Execution) | Obligation to seek best execution for client orders | Contextual reasoning input for `allocation_agent`, not a hard denial |
+### Compliance framework (lighter pass — full table at build time)
+
+| Regulation / mechanism | Grounds |
+|---|---|
+| SEC Rule 15c6-1 | T+1 now covers corporate/municipal bonds (May 2024); Treasuries were already T+1 |
+| FICC GSD (Government Securities Division) | Treasury clearing/netting — FI-005's core check |
+| FICC MBSD + Pass-Thru Notification (PTN) | TBA MBS pool notification deadline — FI-004 |
+| FICC Fails Charge Trading Practice | The named penalty regime — FI-005's escalation |
+| FINRA TRACE / MSRB Rule G-14 (RTRS) | 15-minute post-trade reporting for corporate/municipal bonds — a much tighter compliance-reporting clock than equities' CAT |
+| Day-count convention standards (Actual/Actual vs. 30/360) | FI-003's grounding reference table |
 
 ### Scenarios
 
-- **EQ-001 — Clean straight-through.** New 10,000-share MSFT order via FIX message.
-  Intake parses it, flags long (not short). Allocation splits across 3 client
-  sub-accounts, all within concentration limits. Affirmation matches cleanly same-day.
-  Settlement confirms DTCC/internal ledger agree. No exceptions.
-- **EQ-002 — SSI data error.** One sub-account's standing settlement instruction is
-  stale (wrong custodian account). Affirmation flags a mismatch; investigation triages
-  it as a data error (not a settlement-risk event); proposes correcting the SSI and
-  reprocessing. Requires human sign-off before the correction goes live.
-- **EQ-003 — Governance beat (information barrier).** Exception investigation is
-  handed a plausible-but-denied tool — checking desk P&L/commission data "to see if
-  this trade was being deprioritized" — crossing an information-barrier boundary it
-  has no authorization for. Denied. Orchestrator reroutes to a narrower investigation
-  using only settlement/affirmation data it's actually entitled to.
-- **EQ-004 — PM rebalance trigger (the dynamic-routing showcase).** A portfolio
-  manager requests trimming MSFT across several accounts to fund a rebalance
-  elsewhere. The orchestrator classifies this trigger differently from EQ-001 — it's
-  already structured, so it routes straight to `allocation_agent`, skipping
-  `order_intake_agent` entirely. Concrete proof that classification is genuinely
-  dynamic, not a fixed edge.
-- **EQ-005 — Genuine fails-to-deliver risk (highest severity).** Settlement
-  reconciliation finds the firm doesn't hold enough MSFT shares in inventory to
-  deliver — a real settlement-risk event. Pulls in Reg SHO's locate-requirement logic
-  and escalates to a senior compliance officer, not a routine ops sign-off —
-  demonstrating the human-in-the-loop step itself can route to a different reviewer
-  based on severity.
+- **FI-001 — Clean straight-through (corporate bond).** Correctly classified via
+  CUSIP/security-master lookup, correct 30/360 accrued-interest calculation, clean
+  affirmation, clean FICC/DTCC settlement match. Baseline.
+- **FI-002 — Instrument misclassification risk.** A trade ticket is ambiguous about
+  whether it's a Treasury note or a similarly-named agency/corporate bond. The
+  classification agent must resolve this from real reference data, not guess — a
+  wrong classification computes the wrong settlement cycle entirely (and if
+  misclassified as TBA MBS, an entirely wrong monthly settlement date).
+- **FI-003 — Accrued-interest / day-count convention break (a cash break, not a
+  quantity break).** The settlement amount is computed with the wrong day-count
+  convention for this instrument type, producing a real cash mismatch at affirmation
+  even though quantity and counterparty details are correct. Grounded in a real
+  reference table, not an LLM's own arithmetic.
+- **FI-004 — TBA MBS pool-notification deadline at risk (proactive escalation).** An
+  agency MBS trade approaching its 48-hour pool-notification cutoff before the SIFMA
+  settlement date. The investigation agent must recognize the deadline risk *before*
+  a fail happens and escalate proactively — a genuinely different reasoning shape
+  than every reactive-investigation scenario in this repo so far.
+- **FI-005 — Treasury settlement fail, Fails Charge regime (Tier 2, highest
+  severity).** A Treasury trade fails to settle — a real inventory/counterparty
+  shortfall — triggering FICC's actual Fails Charge Trading Practice. Escalates to
+  Tier 2 compliance-officer review, same severity tier as Equities' EQ-005 but
+  grounded in fixed income's own named penalty mechanism.
 
-### Human-in-the-loop
+**Optional stretch scenario (not core to this round):** a repo/collateral-substitution
+case — genuinely different governance shape again (daily mark-to-market, margin
+calls, collateral eligibility/haircut schedules) rather than a settlement-chain
+problem at all. Worth a future FI-006 if repo-desk coverage is wanted later, kept
+separate from the initial 5 rather than diluting this round.
 
-Two-tier from day one, both requiring a written note: a routine ops-analyst correction
-(EQ-002) vs. an escalated compliance-officer review (EQ-005) — a step beyond every
-existing demo's single-tier interrupt. The severity classification (which tier a given
-exception routes to) is itself a reasoning decision, not a hardcoded mapping from
-scenario ID to reviewer — worth verifying live that the routing is actually driven by
-the investigation's own findings (e.g. "is this a data error or a real settlement-risk
-event") rather than which EQ-### case happened to be running.
+## Pain-scenario menu: the remaining sub-domains
 
-## Pain-scenario menu: the other four sub-domains
-
-Equities is the cleanest starting point specifically because T+1 is uniform and
-DTCC/CNS is one clearing path. The other four each break that simplicity in a
-different way — useful for sequencing which to build next.
+FX, Commodities, and International stay at this lighter menu level until their turn.
 
 **FX** — still T+2 spot (didn't move with equities' 2024 T+1 shift), settled through
 CLS (Continuous Linked Settlement) for payment-vs-payment risk elimination, or
@@ -159,13 +181,6 @@ physical-delivery obligation to a cash-settlement agent (or vice versa) is a goo
 denial/governance-boundary story, plus clearinghouse (CME/ICE) variation-margin call
 verification is a time-pressured check analogous to the DTCC step in equities.
 
-**Fixed Income** — corporate/muni bonds moved to T+1 alongside equities in 2024, but
-Treasuries and repo can settle same-day (T+0). Pain scenario: an agent misclassifying
-instrument type (bond vs. Treasury vs. repo) picks the wrong settlement cycle
-entirely — a good "grounded in real reference data, not LLM-improvised" decision-node
-story. Accrued-interest calculation correctness feeding the settlement amount is
-another concrete, checkable data point.
-
 **International** — really a composition problem, not a new primitive: a non-US
 equity or bond settlement needs the equities/fixed-income pipeline *plus* an FX
 conversion step *plus* a local sub-custodian (global custodian → local market
@@ -179,9 +194,8 @@ spans policy surfaces other demos own individually).
 
 All 5 land inside `examples/trading_desk_ops/` over time, added the same way
 `institutional_portfolio_review`'s `REVIEW_TYPES` grew — one new domain branch at a
-time, not a new example each round. Equities first (closest to a clean single-domain
-build, and the one already fully sketched above). Fixed Income second (same T+1
-cycle, different instrument-classification risk — the fastest follow-on). FX and
-Commodities third and fourth (each needs a real branching decision Equities/Fixed
-Income don't). International last, as the cross-cutting domain that composes the
-other four's agents rather than introducing its own from scratch.
+time, not a new example each round. **Equities — done.** Fixed Income next (sketched
+in full above, not yet built). FX and Commodities after that (each needs a real
+branching decision Equities/Fixed Income don't). International last, as the
+cross-cutting domain that composes the other four's agents rather than introducing
+its own from scratch.
