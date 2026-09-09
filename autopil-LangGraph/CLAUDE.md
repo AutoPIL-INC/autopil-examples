@@ -155,6 +155,27 @@ as a whole.
 - `autopil[langgraph]>=0.10.0` is installed straight from PyPI, listed in
   `requirements.txt`. `0.10.0` is the first PyPI release with `task_type` support on
   `ContextGuard.protect()`, which this demo requires.
+- **`langgraph`/`langgraph-cli[inmem]` are floor-pinned in `requirements.txt`
+  (`>=1.2.11`/`>=0.4.31`) — they weren't pinned at all before 2026-09-09, which is
+  exactly how `langgraph-api` (a `langgraph-cli[inmem]` transitive dependency, not
+  the pin target itself) silently drifted to 0.10.0 and sat there past its own
+  End-of-Life notice ("no bug fixes or security updates," 4+ minor versions behind)
+  with nothing in this repo ever forcing a re-resolve.** Upgraded live to `langgraph`
+  1.2.11 / `langgraph-api` 0.14.0 / `langgraph-checkpoint` 4.2.0 / `langgraph-cli`
+  0.4.31 / `langgraph-runtime-inmem` 0.34.0 and regression-tested for real — not just
+  import success — across all 9 demos: at least one full scenario run to completion
+  per demo, every `interrupt()`/resume mechanism exercised (including
+  `trading_desk_ops`'s two-tier review, both tiers), and hosted SaaS mode exercised
+  live against the real tenant for 6 of the 9 demos that have it. Zero regressions,
+  zero new tracebacks or deprecation warnings naming any upgraded package. One
+  cosmetic-only new item: `langgraph_api.timing.timer`'s "Graph import exceeded the
+  expected startup time" warning now fires for `institutional_portfolio_review`/
+  `trading_desk_ops` specifically (both make real hosted-bootstrap HTTP calls at
+  import time) — looks like new import-timing instrumentation added somewhere in the
+  jump, not a functional issue (the bootstrap calls themselves all returned 200 OK).
+  If you rebuild `.venv` from scratch, `pip install -r requirements.txt` now
+  guarantees at least this tested combination rather than silently resolving
+  whatever's oldest-compatible.
 - `ANTHROPIC_API_KEY` (and friends) live in `.env`, which is gitignored — never commit
   it. `.env.example` documents the required keys.
 - Both scripts pick a model via a `_make_llm()` helper. The fraud demo's version tries,
