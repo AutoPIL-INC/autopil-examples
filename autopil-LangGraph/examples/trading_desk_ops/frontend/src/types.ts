@@ -22,6 +22,12 @@ export interface TradingOpsState {
   audit_summary: Record<string, unknown>;
 }
 
+// `action` (read|write|delete, autopil>=0.12.0) is omitted for every read — which is
+// every tool_call event except one: decision_node's post-approval
+// submit_settlement_correction call on a Fixed Income cash-break case (FI-003), the
+// one genuine WRITE in this demo. Absent means "read", same convention the backend's
+// own allowed_actions defaulting follows — see ToolCallRow in ExecutionTab.tsx for
+// where this renders as a distinct badge.
 export interface ToolCallEvent {
   type: "tool_call";
   role: string;
@@ -29,6 +35,7 @@ export interface ToolCallEvent {
   key: string;
   status: "allowed" | "denied";
   reason: string | null;
+  action?: "write" | "delete";
 }
 
 // Both routing stages here are genuinely LLM-driven — unlike quality_control's fixed
@@ -73,6 +80,7 @@ export interface AuditRoleSummary {
     source_id: string;
     policy_name: string;
     reason: string | null;
+    action?: string;
   }>;
 }
 

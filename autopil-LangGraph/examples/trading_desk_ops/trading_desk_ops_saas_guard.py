@@ -73,13 +73,17 @@ class _Decision:
 
 class _RemoteAuditEvent:
     """Matches the attributes _collect_audit_summary()/print_audit_trail() read off a
-    local AuditEvent: .decision (with .value), .source_id, .policy_name, .reason."""
+    local AuditEvent: .decision (with .value), .source_id, .policy_name, .reason,
+    .action (read|write|delete — AuditEventResponse gained this field in the action-
+    vocabulary rollout's Step 5; .get() with a "read" fallback in case an older hosted
+    tenant's response predates that)."""
 
     def __init__(self, raw: dict):
         self.decision = _Decision(raw["decision"])
         self.source_id = raw["source_id"]
         self.policy_name = raw["policy_name"]
         self.reason = raw.get("reason")
+        self.action = raw.get("action", "read")
 
 
 class RemoteContextGuard:
@@ -104,8 +108,26 @@ class RemoteContextGuard:
         )
 
     def protect(self, *, agent_role, user_id, source_id, sensitivity_level, session_id,
-                agent_id=None, task_type=None):
+                agent_id=None, task_type=None, action="read"):
         sensitivity_str = getattr(sensitivity_level, "value", sensitivity_level)
+        # action-level governance pilot (autopil>=0.12.0) — the hosted API's own
+        # EvaluateRequest.action field, added here so this shim doesn't crash on the
+        # one guarded call in this demo that passes action=Action.WRITE
+        # (_submit_settlement_correction in trading_desk_ops_demo.py).
+        # hosted_spec_from_local_policy() below translates allowed_actions/
+        # denied_actions too. Live-verified against the real trial tenant, 2026-09-09
+        # (this demo's env has both AUTOPIL_ADMIN_KEY/AUTOPIL_EVALUATE_KEY set, so
+        # every run — including the FI-003 CLI run — actually exercises hosted mode,
+        # not local): exception_investigation_agent's write on FI-003 returned ALLOW
+        # from demo_tdo_exception_investigation_agent_policy; the same write claiming
+        # agent_role=settlement_reconciliation_agent returned a real DENY ("Action
+        # 'write' is not in the allowed action list... (allowed: ['read'])"); the
+        # same authorized role attempting action=Action.DELETE on the same source
+        # also DENIED ("allowed: ['read', 'write']") — confirming the hosted policy
+        # translation is genuinely scoped to write only, not "anything goes now."
+        # The pre-existing bootstrap_agents() 409 Conflict gap noted in this file's
+        # module docstring did not reproduce on this run.
+        action_str = getattr(action, "value", action)
 
         def decorator(fn):
             def wrapped(*args, **kwargs):
@@ -114,7 +136,7 @@ class RemoteContextGuard:
                     "query": f"retrieve {source_id}" + (f" (key={key})" if key else ""),
                     "agent_role": agent_role, "user_id": user_id, "source_id": source_id,
                     "sensitivity_level": sensitivity_str, "session_id": session_id,
-                    "agent_id": agent_id, "task_type": task_type,
+                    "agent_id": agent_id, "task_type": task_type, "action": action_str,
                 }
                 resp = None
                 for attempt in range(_EVALUATE_MAX_ATTEMPTS):
@@ -229,6 +251,18 @@ def hosted_spec_from_local_policy(policy: dict, regulations: list) -> dict:
         "denied_tasks": policy.get("denied_tasks", []),
         "require_task_for_sensitivity": policy.get("require_task_for_sensitivity"),
         "task_bindings": policy.get("task_bindings", []),
+        # action-level governance pilot (autopil>=0.12.0) — CreatePolicyRequest gained
+        # these two fields in the core API's action-vocabulary rollout (Step 5); added
+        # here so exception_investigation_agent_policy's allowed_actions: [read, write]
+        # actually reaches the hosted tenant instead of silently defaulting to
+        # read-only there (task_bindings above already carried its own nested
+        # break_remediation.actions: [write] even before this line, but that's inert
+        # without the policy-level gate also being unlocked — see policy_engine.py's
+        # evaluate order). Live-verified against the real trial tenant, 2026-09-09 —
+        # see protect()'s own comment above for the specific ALLOW/DENY results this
+        # translation produced.
+        "allowed_actions": policy.get("allowed_actions", []),
+        "denied_actions": policy.get("denied_actions", []),
         "industry": policy.get("industry"),
         "process_group": policy.get("process_group"),
         "regulations": matched_regulations,

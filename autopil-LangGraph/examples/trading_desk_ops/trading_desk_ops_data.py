@@ -44,6 +44,12 @@ section, for the FI-### fixtures themselves):
   `SHARE_INVENTORY_DATA` on every FI-### case (Reg SHO's locate requirement is an
   equity-short-sale mechanism, not a fixed-income one — FI-005's genuine delivery
   shortfall is governed by the Fails Charge Trading Practice instead, `FAILS_CHARGE_DATA`).
+- `SETTLEMENT_CORRECTIONS` (added for the action-level governance pilot, autopil>=0.12.0)
+  is a sixth genuinely new source, but a WRITE target rather than a read source — starts
+  empty, mutated only by `_submit_settlement_correction()` in `trading_desk_ops_demo.py`,
+  gated by `exception_investigation_agent_policy`'s `break_remediation` task_binding
+  (`actions: [write]`). See that policy's own comment block for why this doesn't
+  contradict "cannot resolve unilaterally."
 
 Five scenarios, each a distinct blue-chip name — EQ-001 MSFT, EQ-002 NVDA, EQ-003 AAPL,
 EQ-004 AMZN, EQ-005 GOOG — all a 10,000-share (or, for EQ-004, a smaller PM-directed)
@@ -553,6 +559,16 @@ DAY_COUNT_REFERENCE = {
     "agency_mbs_tba": {"day_count_convention": "30/360",
                         "note": "Agency MBS (TBA) pools use 30/360 for accrued interest, same as corporates."},
 }
+
+# ── the action-level governance pilot's WRITE target (autopil>=0.12.0) ───────────────
+# Empty until decision_node's post-approval write actually fires — see
+# _submit_settlement_correction() in trading_desk_ops_demo.py. Same "table the guarded
+# function mutates" role every other SOURCES entry plays for reads, just written to
+# instead of only read from. Only exception_investigation_agent_policy's
+# break_remediation task_binding is authorized to write here (actions: [write]) — every
+# other role's policy has no allowed_actions at all, so a write attempt from any of
+# them is denied by the SDK's own deny-by-default rule, not a check this demo adds.
+SETTLEMENT_CORRECTIONS: dict = {}
 
 # ── affirmation_matching_agent sources ───────────────────────────────────────────────
 # FI-003's headline signal: TRADE_CAPTURE computed the settlement amount with the

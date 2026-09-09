@@ -598,6 +598,23 @@
   background: rgba(0, 204, 221, 0.12);
 }
 
+/* Action-level governance pilot (autopil>=0.12.0) — a second badge alongside the
+   existing ALLOWED/DENIED one, shown only on the rare tool_call event whose action
+   isn't the default read (currently just this demo's one settlement-correction
+   write). Outlined rather than filled so it reads as a modifier on the ALLOW/DENY
+   decision, not a competing one. */
+.feed-action-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--yellow);
+  color: var(--yellow);
+  background: transparent;
+}
+
 /* A role the orchestrator's classification determined is genuinely not applicable to
    this trigger (e.g. order_intake_agent on a pm_rebalance trigger) — muted/dashed so
    it reads as "deliberately excluded," not a step that ran and produced nothing. */
@@ -880,6 +897,13 @@
 .chip-denied {
   color: var(--red);
   background: rgba(244, 81, 108, 0.1);
+}
+
+/* Action-level governance pilot (autopil>=0.12.0) — write/delete chips in a policy
+   card's Actions row, same yellow as the live feed's action badge. */
+.chip-action {
+  color: var(--yellow);
+  background: rgba(245, 166, 35, 0.12);
 }
 
 .policy-card-meta {

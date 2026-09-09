@@ -42,9 +42,16 @@ function groundingRegulationForAction(proposedAction: string) {
 function ToolCallRow({ event }: { event: FeedEvent & { type: "tool_call" } }) {
   const denied = event.status === "denied";
   const regulation = denied ? regulationForDenial(event.tool, event.role) : undefined;
+  // action-level governance pilot (autopil>=0.12.0) — omitted on every read (which is
+  // every tool_call except decision_node's post-approval settlement-correction write
+  // on a Fixed Income cash break), so this only ever adds a badge to the one row
+  // where the action gate is doing something beyond the default, same "don't clutter
+  // the common case" convention the AutoPIL dashboard's own action badge follows.
+  const action = event.action;
   return (
     <div className={`feed-row ${denied ? "denied" : "allowed"}`}>
       <span className="feed-badge">{denied ? "DENIED" : "ALLOWED"}</span>
+      {action && <span className={`feed-action-badge feed-action-${action}`}>{action.toUpperCase()}</span>}
       <span className="feed-role">{event.role}</span>
       <span className="feed-body">
         {event.tool}

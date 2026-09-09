@@ -47,6 +47,26 @@ Two departures from every prior demo in this repo, both required by this build:
    `quality_control`'s `decision_node` established for a single tier, applied here to
    two.
 
+**Action-level governance pilot (autopil>=0.12.0), Fixed Income only.** Every read in
+this repo, in every demo including this one's other 20+ getters, is gated on
+(agent_role, source_id, task_type, sensitivity) — a real ALLOW/DENY, but only ever a
+read. This demo adds the first genuine WRITE: once a human approves (or overrides INTO)
+a confirmed FI-003-shaped cash-break correction, `decision_node` calls
+`_submit_settlement_correction()`, a `guard.protect(..., action=Action.WRITE)`-wrapped
+function — `exception_investigation_agent_policy` is the only policy in this file that
+opts into `allowed_actions: [read, write]`, scoped further by a `break_remediation`
+task_binding (`actions: [write]`) to exactly one source
+(`settlement_correction_submission`). Every other role, and every other task on this
+same role, stays read-only — not because this demo denies them explicitly, but because
+the SDK's own policy engine defaults `allowed_actions` to `["read"]` when the key is
+absent, so nothing else silently gained a mutation capability. The write is never a
+tool on `exception_investigation_agent`'s own toolbelt — it only ever fires from
+`decision_node`, after human sign-off, so the same "no settlement disposition happens
+on an AI's say-so" principle applies to the write as much as it does to every other
+demo's final action. Mirrors the pattern
+`policies/financial_services/consumer_banking.yaml`'s pilot established in the core
+AutoPIL repo (`loan_underwriter_policy`'s `credit_decision` task, `actions: [write]`).
+
 `TRADING_DOMAINS` is a domain registry (mirroring `institutional_portfolio_review`'s
 `REVIEW_TYPES` shape) with `"equities"` and `"fixed_income"` populated — the other
 three sub-domains named in `TRADING_OPS_ROADMAP.md` (FX, Commodities, International)
@@ -85,7 +105,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
-from autopil import ContextGuard, SensitivityLevel
+from autopil import ContextGuard, SensitivityLevel, Action
 from autopil.db.sqlite import SQLiteAgentRegistryStore
 from autopil.models import AgentRegistryEntry
 from autopil.policy_engine import PolicyEngine
@@ -362,6 +382,10 @@ SOURCES = {
     "ficc_mbsd_data": data.FICC_MBSD_DATA,
     "pool_notification_data": data.POOL_NOTIFICATION_DATA,
     "fails_charge_data": data.FAILS_CHARGE_DATA,
+    # WRITE target for the action-level governance pilot (autopil>=0.12.0) — see
+    # _submit_settlement_correction() below. Starts empty; only mutated by that guarded
+    # function, never read via _make_getter() like everything else in this dict.
+    "settlement_correction_submission": data.SETTLEMENT_CORRECTIONS,
     # over-scope / attack-surface / information-barrier sources — no role's policy
     # authorizes any of these
     "desk_pnl_data": data.DESK_PNL_DATA,
@@ -393,6 +417,52 @@ def _make_getter(agent_role: str, source_id: str, sensitivity: SensitivityLevel,
         table = SOURCES[source_id]
         return table.get(key, table) if key else table
     return _get
+
+
+def _submit_settlement_correction(case_id: str) -> dict:
+    """Action-level governance pilot (read|write|delete, autopil>=0.12.0) — the one WRITE
+    in this demo. Submits the corrected settlement amount for a confirmed cash break,
+    computed entirely from real fixture data already read during break_triage
+    (AFFIRMATION_RESULTS/COUNTERPARTY_RECORDS), never invented here.
+
+    Deliberately NOT a tool on exception_investigation_agent's toolbelt — this is only
+    ever called from decision_node, after a human has approved the correction, so the
+    AI can diagnose a break but never unilaterally act on it. The guard.protect() call
+    below is what makes the write itself a real, independently-gated AutoPIL decision
+    (task_type="break_remediation", action=Action.WRITE) rather than a plain state
+    mutation the demo just narrates.
+
+    Live-verified, 2026-09-09 (this repo's .env has AUTOPIL_ADMIN_KEY/
+    AUTOPIL_EVALUATE_KEY set, so this call — like every guarded call in this demo —
+    actually runs against the hosted trial tenant, not a local ContextGuard): FI-003
+    end to end via run_case() genuinely ALLOWs and records the correction
+    (corrected_settlement_amount=9976905.43, matching COUNTERPARTY_RECORDS exactly);
+    the identical call claiming agent_role="settlement_reconciliation_agent" DENIES
+    ("Action 'write' is not in the allowed action list... allowed: ['read']"); the
+    same authorized role attempting action=Action.DELETE on this source also DENIES
+    ("allowed: ['read', 'write']"). See trading_desk_ops_saas_guard.py's protect()
+    for the hosted-translation side of this verification.
+    """
+    @guard.protect(agent_role="exception_investigation_agent", user_id="trading_ops",
+                   source_id="settlement_correction_submission", sensitivity_level=SensitivityLevel.HIGH,
+                   session_id=SESSIONS["exception_investigation_agent"],
+                   agent_id=AGENT_IDS["exception_investigation_agent"],
+                   task_type="break_remediation", action=Action.WRITE)
+    def _write() -> dict:
+        affirmation = data.AFFIRMATION_RESULTS.get(case_id, {})
+        confirmed = data.COUNTERPARTY_RECORDS.get(case_id, {})
+        record = {
+            "case_id": case_id,
+            "correction_type": "day_count_reprocess",
+            "corrected_day_count_convention": confirmed.get("confirmed_day_count_convention"),
+            "corrected_settlement_amount": confirmed.get("confirmed_settlement_amount"),
+            "cash_discrepancy_usd": affirmation.get("cash_discrepancy_usd"),
+            "submitted_by": "exception_investigation_agent",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        data.SETTLEMENT_CORRECTIONS[case_id] = record
+        return record
+    return _write()
 
 
 def _safe_call(fn, key: str = "") -> dict:
@@ -1199,6 +1269,41 @@ def decision_node(state: TradingOpsState) -> dict:
     approved = human_decision.get("approved", True)
     action = proposed_action if approved else (human_decision.get("override_action") or proposed_action)
 
+    # Action-level governance pilot (read|write|delete, autopil>=0.12.0) — the one WRITE
+    # in this demo. Fires only once a human has approved (or overridden INTO) the
+    # fixed-income cash-break correction specifically; any other final action, or an
+    # override to something else, never reaches this call — see
+    # exception_investigation_agent_policy's break_remediation task_binding for the
+    # policy side of this gate, and _submit_settlement_correction()'s own docstring for
+    # why this is called here rather than as a tool on the specialist's own toolbelt.
+    # Local-only denial_log copy — decision_node doesn't return denial_log today (this
+    # is the last real node, nothing downstream reads it after), so this stays scoped
+    # to this run's own print/disposition output, same "copy before mutating" pattern
+    # run_tool_loop()/compliance_report_node() use above. Whether allowed or denied,
+    # the write attempt is a real AutoPIL-recorded event either way — _collect_audit_summary()
+    # below picks it up straight from guard.get_audit_trail() regardless of this list.
+    write_denial_log = list(state["denial_log"])
+    if state["domain"] == "fixed_income" and action == "CORRECT DAY-COUNT & REPROCESS — accrued-interest cash break confirmed":
+        try:
+            _submit_settlement_correction(case_id)
+            print(f"      [ok]      exception_investigation_agent -> submit_settlement_correction({case_id}) [WRITE]")
+            _emit({
+                "type": "tool_call", "role": "exception_investigation_agent",
+                "tool": "submit_settlement_correction", "key": case_id,
+                "status": "allowed", "reason": None, "action": "write",
+            })
+        except PermissionError as e:
+            reason = str(e)
+            write_denial_log.append({"agent_role": "exception_investigation_agent",
+                                      "tool": "submit_settlement_correction", "reason": reason})
+            print(f"      [DENIED]  exception_investigation_agent -> submit_settlement_correction({case_id}) [WRITE]")
+            print(f"                {reason}")
+            _emit({
+                "type": "tool_call", "role": "exception_investigation_agent",
+                "tool": "submit_settlement_correction", "key": case_id,
+                "status": "denied", "reason": reason, "action": "write",
+            })
+
     print(f"\n{'─'*70}\n  OUTCOME  |  {case_id}\n{'─'*70}")
     print(f"  Reviewer tier required: {tier_label}")
     print(f"  Proposed: {proposed_action}")
@@ -1210,8 +1315,8 @@ def decision_node(state: TradingOpsState) -> dict:
     print(f"  Final: {action}")
     print(f"  Expected break type (ground truth): {expected.get('expected_break_type')}")
     print(f"  Specialists run: {state['specialists_run']}  (skipped: {state['skipped_roles']})")
-    print(f"  Denials encountered: {len(state['denial_log'])}")
-    for d in state["denial_log"]:
+    print(f"  Denials encountered: {len(write_denial_log)}")
+    for d in write_denial_log:
         print(f"    ✗  [{d['agent_role']}] {d['tool']}: {d['reason']}")
 
     audit_summary = _collect_audit_summary()
@@ -1223,7 +1328,7 @@ def decision_node(state: TradingOpsState) -> dict:
         "human_override_action": human_decision.get("override_action"),
         "human_notes": human_decision.get("notes"),
         "specialists_run": state["specialists_run"], "skipped_roles": state["skipped_roles"],
-        "denial_count": len(state["denial_log"]),
+        "denial_count": len(write_denial_log),
         "audit_summary": audit_summary,
     })
     return {"final_decision": action, "tier": tier, "audit_summary": audit_summary}
@@ -1283,7 +1388,11 @@ graph = build_graph()
 
 def _collect_audit_summary() -> dict:
     """Per-role AutoPIL audit trail, pulled directly via guard.get_audit_trail() —
-    one row per policy decision, across every registered role's session."""
+    one row per policy decision, across every registered role's session. Each event's
+    `action` (read|write|delete, autopil>=0.12.0) is included so a governed write shows
+    up as a distinct decision here too, not just in the live tool_call feed — matches
+    both ContextGuard's real AuditEvent.action and RemoteContextGuard's
+    _RemoteAuditEvent.action (see trading_desk_ops_saas_guard.py)."""
     summary: dict = {"roles": {}, "total": 0, "allowed": 0, "denied": 0}
     for role, sid in SESSIONS.items():
         events = guard.get_audit_trail(sid)
@@ -1304,6 +1413,7 @@ def _collect_audit_summary() -> dict:
                     "source_id": e.source_id,
                     "policy_name": e.policy_name,
                     "reason": e.reason if e.decision.value == "DENY" else None,
+                    "action": getattr(e, "action", "read"),
                 }
                 for e in events
             ],

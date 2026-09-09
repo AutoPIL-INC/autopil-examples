@@ -21,13 +21,23 @@ design rationale, including why no existing autopil policy stub matched this dom
 this file is just setup + what to expect.
 
 No live OMS/EMS, custodian, DTCC/NSCC, or FICC feed is involved anywhere in this demo —
-every guarded getter reads from `trading_desk_ops_data.py`, exactly like every other
-demo in this repo.
+every guarded call reads from or writes to `trading_desk_ops_data.py`, exactly like
+every other demo in this repo's own fixture data.
 
 This demo covers the **Equities** and **Fixed Income** sub-domains of a planned
 5-sub-domain build (see `/TRADING_OPS_ROADMAP.md`) — FX, Commodities, and
 International are not built yet. `TRADING_DOMAINS` is shaped so they can be added
 later as sibling entries without restructuring the graph (see DESIGN.md §4).
+
+**Action-level governance pilot, Fixed Income only.** Every other guarded call in this
+repo, in every demo, is a read — a real ALLOW/DENY, but always read. This demo adds
+one genuine **write**: once a human approves FI-003's day-count correction,
+`exception_investigation_agent` submits it through `guard.protect(...,
+action=Action.WRITE)` (autopil>=0.12.0's `read | write | delete` vocabulary), gated
+independently of the source/task/sensitivity checks every read already goes through.
+`exception_investigation_agent_policy` is the only policy in this file that opts into
+`allowed_actions: [read, write]`; every other role stays read-only by the SDK's own
+deny-by-default rule. See DESIGN.md §12.
 
 ## What makes this different from a scripted demo
 

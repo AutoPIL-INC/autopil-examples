@@ -152,9 +152,15 @@ as a whole.
 
 - Shared `.venv` at the repo root for both examples. It's tied to this absolute path —
   recreate it (`python3.11 -m venv .venv`) if this directory ever moves.
-- `autopil[langgraph]>=0.10.0` is installed straight from PyPI, listed in
-  `requirements.txt`. `0.10.0` is the first PyPI release with `task_type` support on
-  `ContextGuard.protect()`, which this demo requires.
+- `autopil[langgraph]>=0.12.0` is installed straight from PyPI, listed in
+  `requirements.txt`. `0.10.0` was the first PyPI release with `task_type` support on
+  `ContextGuard.protect()`; bumped to `>=0.12.0` on 2026-09-09 for `Action`
+  (`read | write | delete`) support on `protect()`, which `trading_desk_ops`'s action-
+  level governance pilot requires (see that demo's own CLAUDE.md section below and its
+  DESIGN.md §12). Confirmed via diffing the core `AutoPIL-INC/autopil` repo's
+  `policy_engine.py`/`models.py`/`guard.py` between the `v0.11.0` and `v0.12.0` tags
+  that the action vocabulary itself didn't change between those two releases — 0.12.0
+  is a safe floor for this feature, not a version-specific dependency.
 - **`langgraph`/`langgraph-cli[inmem]` are floor-pinned in `requirements.txt`
   (`>=1.2.11`/`>=0.4.31`) — they weren't pinned at all before 2026-09-09, which is
   exactly how `langgraph-api` (a `langgraph-cli[inmem]` transitive dependency, not
@@ -730,6 +736,27 @@ as a whole.
   5 genuinely new sources (`day_count_reference`, `ficc_gsd_data`, `ficc_mbsd_data`,
   `pool_notification_data`, `fails_charge_data`) were added only because no existing
   schema fit, per the same "extend, don't invent" discipline.
+- **Action-level governance pilot (autopil>=0.12.0), Fixed Income only — the first
+  genuine WRITE anywhere in this repo.** Every guarded call in every demo, including
+  every other role/task in this one, is a read. `exception_investigation_agent_policy`
+  is the only policy that opts into `allowed_actions: [read, write]`, narrowed by a new
+  `break_remediation` task_binding (`actions: [write]`) to one new source
+  (`settlement_correction_submission`) — `decision_node` calls the guarded write only
+  once a human approves FI-003's cash-break correction, never from the role's own
+  toolbelt, so "no disposition happens on an AI's say-so" applies to the write too.
+  Mirrors `policies/financial_services/consumer_banking.yaml`'s pilot in the core
+  `AutoPIL-INC/autopil` repo. Live-verified against the real hosted trial tenant (this
+  repo's `.env` has both `AUTOPIL_ADMIN_KEY`/`AUTOPIL_EVALUATE_KEY` set, so this — like
+  every check in this demo — ran through `RemoteContextGuard`, not local mode): the
+  write genuinely ALLOWs for `exception_investigation_agent`, genuinely DENYs for
+  `settlement_reconciliation_agent` attempting the same call, and genuinely DENYs
+  `action=Action.DELETE` even for the authorized role — required extending
+  `trading_desk_ops_saas_guard.py`'s `RemoteContextGuard.protect()`/
+  `hosted_spec_from_local_policy()` to thread `action`/`allowed_actions` through to the
+  hosted API, which no prior read in this demo needed. See DESIGN.md §12 for the full
+  writeup, including why `break_remediation` is deliberately narrower than the
+  `settlement_release`/`trade_execution`/`allocation_decision` this role's policy
+  already denies.
 - **No existing autopil policy stub matched this domain** — designed from scratch
   (unlike `hospital_revenue_cycle`/`care_coordination`/`quality_control`, each
   adapted from a real stub in the sibling `autopil` repo).
@@ -835,6 +862,14 @@ as a whole.
   non-empty-note-required-on-both-approve-and-override enforcement `quality_control`'s
   reviewer form established, applied here at both tiers. Also copied into the shared
   multi-demo `frontend/src/demos/trading_desk_ops/` (see the module immediately above
-  this one for what "keep in sync by hand" means if either one changes later).
+  this one for what "keep in sync by hand" means if either one changes later) —
+  **with one departure from that copy-verbatim pattern**: in the shared multi-demo app
+  only, `DescriptionTab`/`ExecutionTab` now take a `domain: "equities" | "fixed_income"`
+  prop and render as two separate sidebar entries (a collapsible "Trading Desk Ops"
+  group with "Equities"/"Fixed Income" sub-items, `SIDEBAR_GROUPS` in `frontend/src/App.tsx`)
+  instead of one item mixing all 10 cases — the mixed queue was hard to scan. Same
+  single graph/assistantId/policy underneath; this is a display-side split only, not a
+  backend change. The standalone `examples/trading_desk_ops/frontend/` copy is
+  untouched (still one item, all 10 cases) since it has no use-case sidebar to split.
 - The audit database `examples/trading_desk_ops/trading_desk_ops_audit.db` is
   disposable — safe to delete between runs.

@@ -637,6 +637,118 @@ skip confirmed live under hosted mode too, and EQ-005/FI-005's Tier 2 escalation
 firing correctly. This is real parity between local and hosted enforcement for
 everything except the already-disclosed `session_ttl_minutes` gap below.
 
+## 12. Action-level governance pilot (Fixed Income only)
+
+Every guarded call in this repo, across all 9 demos including every other role and
+task in this one, is a read — a real ALLOW/DENY, but only ever on `(agent_role,
+source_id, task_type, sensitivity_level)`. `autopil` v0.12.0 (v0.11.0 in the core
+`AutoPIL-INC/autopil` repo shipped the feature; 0.12.0 is the next PyPI release that
+carries it forward unchanged — confirmed by diffing `policy_engine.py`/`models.py`/
+`guard.py` between the two tags, zero changes) adds a fourth dimension: `Action` —
+`read | write | delete` — checked via `allowed_actions`/`denied_actions` on the
+policy and, optionally, `actions:` narrowing on an individual `task_bindings` entry.
+Deny-by-default: `allowed_actions` absent defaults to `["read"]`, so every existing
+policy in this repo (this file's other 7 roles included) is unaffected by the
+upgrade — nothing silently gained a mutation capability.
+
+**What's built.** `exception_investigation_agent_policy` is the only policy in this
+file that opts in (`allowed_actions: [read, write]`), narrowed further by a new
+`break_remediation` task_binding (`actions: [write]`) to exactly one new source,
+`settlement_correction_submission`. `decision_node` (trading_desk_ops_demo.py) calls
+the guarded write — `_submit_settlement_correction()` — only once a human has
+approved (or overridden INTO) FI-003's specific cash-break correction; it is
+deliberately not a tool on `exception_investigation_agent`'s own toolbelt, so the
+same "no settlement disposition happens on an AI's say-so" principle this demo
+already applies to every other final action applies to the write too. The
+correction record itself is computed entirely from real fixture data already read
+during `break_triage` (`AFFIRMATION_RESULTS.cash_discrepancy_usd`,
+`COUNTERPARTY_RECORDS.confirmed_settlement_amount`/`confirmed_day_count_convention`)
+— nothing invented at write time.
+
+**Why this role, this task, this source.** `exception_investigation_agent_policy`
+already had `settlement_release`/`trade_execution`/`allocation_decision` in
+`denied_tasks` — this demo's designers had already anticipated and explicitly
+blocked broader execution-flavored tasks for this role before action-level
+governance existed at all. `break_remediation` is deliberately a narrower, different
+task from any of those three (submitting a data correction record, not releasing
+settlement or executing a trade) — those three stay denied, unchanged, so this
+addition doesn't loosen anything already locked down; it opens exactly one new,
+narrow door.
+
+**Mirrors a real precedent, not invented for this demo.** The core `AutoPIL-INC/autopil`
+repo's own pilot rollout (`policies/financial_services/consumer_banking.yaml`) uses
+the identical shape — `loan_underwriter_policy`'s `credit_decision` task requires
+`actions: [write]`, `fraud_analyst_policy`'s `account_freeze` task requires
+`actions: [write]` plus a stricter entitlement — one role, one task, one source, the
+policy-level gate opted in only where a role has a genuine, narrow reason to mutate
+something.
+
+**Verified live, 2026-09-09, against the real hosted trial tenant** (this repo's
+`.env` has both `AUTOPIL_ADMIN_KEY`/`AUTOPIL_EVALUATE_KEY` set, so — unlike the
+§11/§11a verification passes above, which explicitly ran in local mode — every check
+below, including the full FI-003 CLI run, exercised `RemoteContextGuard` and the
+real `POST /v1/context/evaluate` endpoint, not a local `ContextGuard`):
+
+- FI-003 end to end via `run_case()`: `exception_investigation_agent`'s write
+  genuinely `ALLOW`s, recording `corrected_settlement_amount=9976905.43` (exactly
+  `COUNTERPARTY_RECORDS["FI-003"].confirmed_settlement_amount`) and
+  `cash_discrepancy_usd=551.26` — the disposition and audit trail shown in the CLI
+  output include a `✓ ALLOW settlement_correction_submission
+  policy=demo_tdo_exception_investigation_agent_policy` line no prior verification
+  pass in this file has.
+- The identical guarded call claiming `agent_role="settlement_reconciliation_agent"`
+  instead genuinely `DENY`s: *"Action 'write' is not in the allowed action list for
+  role 'settlement_reconciliation_agent' (allowed: ['read'])"* — role separation, the
+  same "can surface a problem, can't remediate it" boundary the blog post and the
+  core repo's own pilot both describe, confirmed live rather than assumed from
+  reading the policy YAML.
+- The same authorized role (`exception_investigation_agent`) attempting
+  `action=Action.DELETE` on the same source also genuinely `DENY`s: *"Action
+  'delete' is not in the allowed action list for role
+  'exception_investigation_agent' (allowed: ['read', 'write'])"* — confirms the
+  grant is scoped to exactly `write`, not "anything goes now that one action is
+  allowed."
+- Existing reads on this same role and source set (`break_triage`) are unaffected —
+  confirmed by re-running `get_day_count_reference` directly, still `ALLOW`.
+
+**Hosted-mode plumbing this pilot required, not previously needed by any read.**
+`trading_desk_ops_saas_guard.py`'s `RemoteContextGuard.protect()` gained an `action`
+parameter (defaulting to `"read"`, matching every existing call site's unchanged
+behavior) threaded into the `POST /v1/context/evaluate` payload — the hosted API's
+real `EvaluateRequest.action` field, confirmed against the core repo's
+`api/schemas.py`. `hosted_spec_from_local_policy()` gained `allowed_actions`/
+`denied_actions` in the `CreatePolicyRequest` body it builds — without this,
+`ensure_policy()`'s translation would have silently dropped the grant and the write
+would have denied remotely even though the local YAML allows it (the same class of
+silent-drop bug §11a's hosted-mode fixes #1/#2 already caught for `owner_tag` and
+stale `task_bindings`). `_RemoteAuditEvent` gained `.action` (from
+`AuditEventResponse.action`, added in the core repo's action-vocabulary rollout Step
+5) so `_collect_audit_summary()` surfaces the write as a distinct action in hosted
+mode exactly as it does locally — confirmed directly: `_collect_audit_summary()`'s
+own event dict for this call reads `{'decision': 'ALLOW', 'source_id':
+'settlement_correction_submission', ..., 'action': 'write'}`.
+
+**Frontend.** `ToolCallEvent`/`AuditRoleSummary`'s event shape both gained an
+optional `action` field (omitted for every read, matching the backend's own
+allowed-by-default read framing) — `ExecutionTab.tsx`'s `ToolCallRow` renders a
+second, outlined WRITE/DELETE badge alongside the existing ALLOWED/DENIED one only
+when present, and `DescriptionTab.tsx`'s policy grid gains an "Actions" chip row
+only on `exception_investigation_agent`'s card — same "don't clutter the common
+case" convention the two-tier review badges already established. Ported into both
+the shared multi-demo `frontend/src/demos/trading_desk_ops/` and the standalone
+`examples/trading_desk_ops/frontend/` (this one, mixed Equities+Fixed Income, no
+`domain` prop) — this addition doesn't depend on the domain split, so both copies
+carry it.
+
+**Out of scope for this pilot.** `require_principal_entitlements`'s `actions:`
+matcher (stricter entitlement gating specifically for write/delete, the mechanism
+`fraud_analyst_policy.account_freeze` uses in the core repo's own pilot) — this
+repo's demos don't thread `principal_claims` through any `ContextRequest` yet, so
+adopting it here would mean building that plumbing first, not a one-line policy
+addition. A second write or a delete (e.g. cancelling a stale pass-thru notification
+on FI-004) — deliberately not added this round, to keep this pilot to the smallest
+real slice: one write, one role, one task, one source.
+
 ## Appendix: hosted trial mode
 
 Added after the initial round (§9 previously listed this as out of scope) — same
