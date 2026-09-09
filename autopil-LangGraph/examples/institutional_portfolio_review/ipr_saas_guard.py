@@ -208,13 +208,25 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
     evaluate endpoint's role-scan fallback — see the module docstring on why that's
     risky on a shared trial tenant). Returns {agent_role: agent_id}.
 
-    Reuses an existing agent (matching agent_role + owner_tag) if one's already
-    registered from a prior run/process, rather than creating a new one every time —
-    approves it first if it's still in "draft". `owner_tag` (stored in the `owner`
-    field) is purely this lookup key, distinct from `owner_team` — the actual
-    business-accountable team — which is kept in sync via PUT on every call if it's
-    out of date, including on agents that were registered before this parameter
-    existed.
+    Agent identity is tracked via a small local JSON cache
+    (`.institutional_portfolio_review_agent_ids.json`, gitignored) mapping role -> agent_id, not by a
+    live GET filtered by `owner`. A cache hit is confirmed with a direct
+    `GET /v1/agents/{id}` (self-heals via rediscovery if that specific agent was
+    ever deleted). A cache miss searches by `agent_role` alone, tenant-wide;
+    `owner_tag` is used only as a soft tie-breaking hint on an ambiguous multi-match,
+    never as a hard filter. `owner`/`owner_team` are written once, at creation, and
+    never touched again by this function.
+
+    This matters because `owner` used to be the lookup mechanism itself — a real
+    incident, 2026-09-08/09, hit `fraud_investigation` and `trading_desk_ops`
+    independently (see either module's own docstring for the full incident) when a
+    human edited `owner` directly in the AutoPIL dashboard, the owner-scoped GET then
+    found nothing, `bootstrap_agents()` tried to recreate every role, got 409
+    Conflict on all of them, and the unhandled exception took down `langgraph dev`'s
+    entire startup (every graph in `langgraph.json`, not just the edited demo).
+    This demo wasn't the one that surfaced the bug, but carried the identical
+    owner-based-lookup design and was fixed proactively at the same time, not left
+    for its own turn to hit it.
     """
     cache = _load_agent_id_cache()
     client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
