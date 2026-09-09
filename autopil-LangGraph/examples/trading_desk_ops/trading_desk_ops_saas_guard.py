@@ -53,7 +53,9 @@ https://autopil-api.onrender.com):
     Forbidden there even though it works fine for POST /v1/context/evaluate.
 """
 
+import json
 import time
+from pathlib import Path
 
 import httpx
 
@@ -233,6 +235,25 @@ def hosted_spec_from_local_policy(policy: dict, regulations: list) -> dict:
     }
 
 
+_AGENT_ID_CACHE_PATH = Path(__file__).with_name(".trading_desk_ops_agent_ids.json")
+
+
+def _load_agent_id_cache() -> dict:
+    if _AGENT_ID_CACHE_PATH.exists():
+        try:
+            return json.loads(_AGENT_ID_CACHE_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_agent_id_cache(cache: dict) -> None:
+    try:
+        _AGENT_ID_CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True))
+    except OSError:
+        pass  # best-effort; a missing cache just means re-discovery by role next time
+
+
 def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag: str,
                       policy_name_for: "callable[[str], str]" = lambda role: f"{role}_policy",
                       owner_team: "str | None" = None) -> dict[str, str]:
@@ -241,67 +262,91 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
     evaluate endpoint's role-scan fallback — risky on a shared trial tenant where
     more than one policy can share an agent_role). Returns {agent_role: agent_id}.
 
-    Reuses an existing agent (matching agent_role + owner_tag) if one's already
-    registered from a prior run/process, rather than creating a new one every time —
-    approves it first if it's still in "draft". `owner_tag` (stored in the `owner`
-    field) is purely this lookup key, distinct from `owner_team` — the actual
-    business-accountable team — which is kept in sync via PUT on every call if it's
-    out of date, including on agents that were registered before this parameter
-    existed.
-    """
-    client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
-    existing_resp = client.get("/v1/agents", params={"framework": "langgraph", "owner": owner_tag})
-    if existing_resp.is_error:
-        raise RuntimeError(
-            f"AutoPIL API error listing agents ({existing_resp.status_code}): "
-            f"{existing_resp.text} — check AUTOPIL_ADMIN_KEY in .env"
-        )
-    by_role = {a["agent_role"]: a for a in existing_resp.json()}
+    Real incident, 2026-09-08/09, in two parts. This demo's 7 original (Equities)
+    agents were registered under owner="Trading-Desk-Ops" — missing the "-team"
+    suffix this code actually queried by ("Trading-Desk-Ops-team") at the time — a
+    literal drift from the original hosted-mode build. The then-current owner-scoped
+    GET found nothing, so bootstrap_agents() tried to recreate every role and got 409
+    Conflict on all 7, taking down langgraph dev's ENTIRE startup (every graph in
+    langgraph.json, not just this one) — module-level bootstrap_agents() calls run at
+    graph-import time. The same bug class hit fraud_investigation the same day, and a
+    first-pass fix there made the 409 path self-heal `owner` back to `owner_tag` —
+    which would have silently reverted a deliberate dashboard edit on every
+    subsequent run had anyone made one. Wrong mechanism: `owner` should be a pure
+    business/display field a human can edit freely, not something the code depends
+    on to find its own agents.
 
+    The actual fix: `owner` is no longer used for lookup at all. Agent identity is
+    tracked via a small local JSON cache (`.trading_desk_ops_agent_ids.json`,
+    gitignored) mapping role -> agent_id. A cache hit is confirmed with a direct
+    `GET /v1/agents/{id}` (self-heals via rediscovery if that specific agent was ever
+    deleted). A cache miss searches by `agent_role` alone, tenant-wide; `owner_tag` is
+    used only as a soft tie-breaking hint on an ambiguous multi-match, never as a hard
+    filter. `owner`/`owner_team` are written once, at creation, and never touched
+    again by this function — editing either directly in the AutoPIL dashboard is safe
+    going forward. (`ensure_policy()` above has its own, separate diff-and-update fix
+    for a different staleness issue — hosted *policies* going stale relative to local
+    YAML — unrelated to this agent-lookup mechanism.)
+    """
+    cache = _load_agent_id_cache()
+    client = httpx.Client(base_url=base_url.rstrip("/"), headers={"X-API-Key": admin_key}, timeout=15.0)
     result = {}
+    cache_dirty = False
+    all_agents = None  # fetched lazily, only if at least one role misses the cache
+
     for role in roles:
-        agent = by_role.get(role)
+        agent = None
+        cached_id = cache.get(role)
+        if cached_id:
+            resp = client.get(f"/v1/agents/{cached_id}")
+            if resp.status_code == 200:
+                agent = resp.json()
+            elif resp.status_code != 404:
+                resp.raise_for_status()
+            # 404 falls through to rediscovery -- the cached id is stale (agent
+            # deleted on the tenant since we last saw it), not a code error.
+
         if agent is None:
-            resp = client.post("/v1/agents", json={
-                "agent_role": role, "display_name": role.replace("_", " ").title(),
-                "description": "Registered by the AutoPIL + LangGraph demos "
-                                "(github.com/AutoPIL-INC/autopil-examples)",
-                "owner": owner_tag, "owner_team": owner_team, "framework": "langgraph",
-                "policy_name": policy_name_for(role),
-            })
-            if resp.status_code == 409:
-                # Real incident, 2026-09-08: this demo's own 7 original (Equities)
-                # agents were registered under owner="Trading-Desk-Ops" -- missing the
-                # "-team" suffix this code actually queries by ("Trading-Desk-Ops-team"),
-                # a literal drift from the original hosted-mode build. The owner-scoped
-                # GET above found nothing, so this POST tried to create a duplicate
-                # agent_role and the API correctly rejected it -- but the unhandled
-                # exception took down langgraph dev's ENTIRE startup (every graph in
-                # langgraph.json, not just trading_desk_ops), since module-level
-                # bootstrap_agents() calls run at graph-import time. Same bug class hit
-                # fraud_investigation the same day (see fraud_saas_guard.py) -- this is
-                # the second, independent occurrence, confirming it's worth guarding
-                # against generically rather than as a one-off fix. Recover by searching
-                # for the existing agent across ALL owners (not just owner_tag) and
-                # adopting it, self-healing its owner field so this doesn't recur.
+            if all_agents is None:
                 all_resp = client.get("/v1/agents", params={"framework": "langgraph"})
                 all_resp.raise_for_status()
-                agent = next((a for a in all_resp.json() if a["agent_role"] == role), None)
-                if agent is None:
-                    raise RuntimeError(
-                        f"AutoPIL API returned 409 creating agent_role={role!r}, but no "
-                        f"existing agent with that role exists under any owner -- a real "
-                        f"conflict, not a stale-owner-tag mismatch. Check the hosted "
-                        f"tenant manually rather than assuming this recovery path covers it."
-                    ) from None
-                if agent.get("owner") != owner_tag:
-                    fix_resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner": owner_tag})
-                    fix_resp.raise_for_status()
-                    agent = fix_resp.json()
+                all_agents = all_resp.json()
+            candidates = [a for a in all_agents if a["agent_role"] == role]
+            if len(candidates) == 1:
+                agent = candidates[0]
+            elif len(candidates) > 1:
+                agent = next((a for a in candidates if a.get("owner") == owner_tag), candidates[0])
             else:
-                resp.raise_for_status()
-                agent = resp.json()
-        elif owner_team is not None and agent.get("owner_team") != owner_team:
+                resp = client.post("/v1/agents", json={
+                    "agent_role": role, "display_name": role.replace("_", " ").title(),
+                    "description": "Registered by the AutoPIL + LangGraph demos "
+                                    "(github.com/AutoPIL-INC/autopil-examples)",
+                    "owner": owner_tag, "owner_team": owner_team, "framework": "langgraph",
+                    "policy_name": policy_name_for(role),
+                })
+                if resp.status_code == 409:
+                    # A concurrent process (another langgraph dev instance starting at
+                    # the same moment) created this agent_role between our search and
+                    # this POST -- re-fetch rather than raising.
+                    retry_resp = client.get("/v1/agents", params={"framework": "langgraph"})
+                    retry_resp.raise_for_status()
+                    agent = next((a for a in retry_resp.json() if a["agent_role"] == role), None)
+                    if agent is None:
+                        raise RuntimeError(
+                            f"AutoPIL API returned 409 creating agent_role={role!r}, but no "
+                            f"existing agent with that role could be found afterward -- a "
+                            f"real conflict. Check the hosted tenant manually."
+                        ) from None
+                else:
+                    resp.raise_for_status()
+                    agent = resp.json()
+            cache[role] = agent["agent_id"]
+            cache_dirty = True
+
+        if owner_team is not None and not agent.get("owner_team"):
+            # Backfill only, on agents registered before this parameter existed --
+            # never overwrite an owner_team a human already set, same
+            # don't-fight-dashboard-edits principle as owner above.
             resp = client.put(f"/v1/agents/{agent['agent_id']}", json={"owner_team": owner_team})
             resp.raise_for_status()
             agent = resp.json()
@@ -310,4 +355,7 @@ def bootstrap_agents(base_url: str, admin_key: str, roles: list[str], owner_tag:
             resp.raise_for_status()
             agent = resp.json()
         result[role] = agent["agent_id"]
+
+    if cache_dirty:
+        _save_agent_id_cache(cache)
     return result
