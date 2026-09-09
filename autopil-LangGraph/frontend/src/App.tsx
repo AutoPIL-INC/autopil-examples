@@ -24,6 +24,15 @@ import "./App.css";
 
 const API_URL = "http://localhost:2024";
 
+// Equities and Fixed Income are one shared graph/policy on the backend (see
+// trading_desk_ops's own CLAUDE.md section) but two distinct sidebar use cases here —
+// same Description/Execution components, just parameterized by domain, so the case
+// queue and copy for one domain never mixes with the other's.
+const TradingDeskOpsEquitiesDescriptionTab = () => <TradingDeskOpsDescriptionTab domain="equities" />;
+const TradingDeskOpsEquitiesExecutionTab = () => <TradingDeskOpsExecutionTab domain="equities" />;
+const TradingDeskOpsFixedIncomeDescriptionTab = () => <TradingDeskOpsDescriptionTab domain="fixed_income" />;
+const TradingDeskOpsFixedIncomeExecutionTab = () => <TradingDeskOpsExecutionTab domain="fixed_income" />;
+
 function useServerStatus() {
   const [connected, setConnected] = useState<boolean | null>(null);
 
@@ -57,8 +66,15 @@ function useTheme() {
   return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))] as const;
 }
 
-type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops" | "hospital_revenue_cycle" | "care_coordination" | "quality_control" | "trading_desk_ops";
+type Demo = "fraud" | "client_analysis" | "institutional_portfolio_review" | "aml_compliance" | "splunk_secops" | "hospital_revenue_cycle" | "care_coordination" | "quality_control" | "trading_desk_ops_equities" | "trading_desk_ops_fixed_income";
 type Tab = "description" | "execution";
+
+// Sidebar grouping: every key listed together here renders as indented sub-items
+// under one collapsible parent header instead of its own flat top-level entry. Every
+// other demo is unaffected — this is additive, not a sidebar redesign.
+const SIDEBAR_GROUPS: Array<{ label: string; keys: Demo[] }> = [
+  { label: "Trading Desk Ops", keys: ["trading_desk_ops_equities", "trading_desk_ops_fixed_income"] },
+];
 
 const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution: ComponentType }> = {
   fraud: {
@@ -101,10 +117,15 @@ const DEMOS: Record<Demo, { label: string; Description: ComponentType; Execution
     Description: QualityControlDescriptionTab,
     Execution: QualityControlExecutionTab,
   },
-  trading_desk_ops: {
-    label: "Trading Desk Ops",
-    Description: TradingDeskOpsDescriptionTab,
-    Execution: TradingDeskOpsExecutionTab,
+  trading_desk_ops_equities: {
+    label: "Equities",
+    Description: TradingDeskOpsEquitiesDescriptionTab,
+    Execution: TradingDeskOpsEquitiesExecutionTab,
+  },
+  trading_desk_ops_fixed_income: {
+    label: "Fixed Income",
+    Description: TradingDeskOpsFixedIncomeDescriptionTab,
+    Execution: TradingDeskOpsFixedIncomeExecutionTab,
   },
 };
 
@@ -116,6 +137,10 @@ export default function App() {
   // Drives which demos the sidebar shows — see industries.ts's `demos` field per
   // industry. Not persisted: nothing outside this component reads it.
   const [industry, setIndustry] = useState<string>("financial_services");
+  // Which SIDEBAR_GROUPS are expanded. selectDemo() below auto-expands a group when
+  // one of its own sub-items becomes active, so picking a demo directly (e.g. from a
+  // future deep link) never leaves its group collapsed around it.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const active = DEMOS[demo];
   const { Description } = active;
@@ -125,6 +150,17 @@ export default function App() {
   const selectDemo = (next: Demo) => {
     setDemo(next);
     setTab("description");
+    const group = SIDEBAR_GROUPS.find((g) => g.keys.includes(next));
+    if (group) setExpandedGroups((prev) => new Set(prev).add(group.label));
+  };
+
+  const toggleGroup = (label: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
   };
 
   const selectIndustry = (next: string) => {
@@ -177,15 +213,50 @@ export default function App() {
       <div className="body-layout">
         <aside className="sidebar">
           <div className="sidebar-title">Use Cases</div>
-          {visibleDemoKeys.map((key) => (
-            <button
-              key={key}
-              className={`sidebar-item ${demo === key ? "active" : ""}`}
-              onClick={() => selectDemo(key)}
-            >
-              {DEMOS[key].label}
-            </button>
-          ))}
+          {(() => {
+            const renderedGroups = new Set<string>();
+            return visibleDemoKeys.map((key) => {
+              const group = SIDEBAR_GROUPS.find((g) => g.keys.includes(key));
+              if (group == null) {
+                return (
+                  <button
+                    key={key}
+                    className={`sidebar-item ${demo === key ? "active" : ""}`}
+                    onClick={() => selectDemo(key)}
+                  >
+                    {DEMOS[key].label}
+                  </button>
+                );
+              }
+              // A group can list keys the current industry doesn't show — render it
+              // once, using only its members that are actually visible right now.
+              if (renderedGroups.has(group.label)) return null;
+              renderedGroups.add(group.label);
+              const groupKeys = group.keys.filter((k) => visibleDemoKeys.includes(k));
+              const expanded = expandedGroups.has(group.label) || groupKeys.includes(demo);
+              return (
+                <div key={group.label} className="sidebar-group">
+                  <button
+                    className="sidebar-item sidebar-group-header"
+                    onClick={() => toggleGroup(group.label)}
+                  >
+                    <span className={`sidebar-group-caret ${expanded ? "expanded" : ""}`}>▸</span>
+                    {group.label}
+                  </button>
+                  {expanded &&
+                    groupKeys.map((k) => (
+                      <button
+                        key={k}
+                        className={`sidebar-item sidebar-subitem ${demo === k ? "active" : ""}`}
+                        onClick={() => selectDemo(k)}
+                      >
+                        {DEMOS[k].label}
+                      </button>
+                    ))}
+                </div>
+              );
+            });
+          })()}
         </aside>
 
         <div className="content-area">

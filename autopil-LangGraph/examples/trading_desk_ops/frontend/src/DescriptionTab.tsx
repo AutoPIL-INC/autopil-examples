@@ -22,6 +22,20 @@ function PolicyCard({ policy }: { policy: AgentPolicy }) {
           ))}
         </div>
       </div>
+      {/* Action-level governance pilot (autopil>=0.12.0) — shown only when a role has
+          opted into something beyond the read-only default (every other role here
+          leaves allowedActions undefined), same "don't clutter the common case"
+          convention the AutoPIL dashboard's own Actions section follows. */}
+      {policy.allowedActions && (
+        <div className="policy-card-row">
+          <span className="policy-label">Actions</span>
+          <div className="chip-list">
+            {policy.allowedActions.map((a) => (
+              <span key={a} className={`chip ${a === "read" ? "chip-allowed" : "chip-action"}`}>{a}</span>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="policy-card-meta">
         max sensitivity: <strong>{policy.maxSensitivity}</strong> · session TTL:{" "}
         <strong>{policy.sessionTtlMinutes} min</strong>
@@ -95,9 +109,16 @@ export default function DescriptionTab() {
             (a day-count/accrued-interest mismatch, FI-003 — a different fixture field
             entirely from a quantity/SSI break, not a relabeling) and a{" "}
             <strong>proactive deadline escalation</strong> (a TBA pool-notification
-            cutoff at risk, FI-004 — fires before any settlement fail, not after one). No
-            live OMS/EMS, custodian, DTCC/NSCC, or FICC feed is involved anywhere — every
-            guarded getter reads from simulated fixture data.
+            cutoff at risk, FI-004 — fires before any settlement fail, not after one).
+            Fixed income is also the one place in this repo where AutoPIL governs a{" "}
+            <strong>write</strong>, not just a read: once a human approves FI-003's
+            correction, <code>exception_investigation_agent</code> submits it through a
+            second, independently-gated action-level check (read vs. write vs. delete,
+            on top of the source/task/sensitivity gates every read already goes
+            through) — every other role stays read-only by default, so the same write
+            attempted under a different role denies. No live OMS/EMS, custodian,
+            DTCC/NSCC, or FICC feed is involved anywhere — every guarded getter reads
+            from simulated fixture data.
           </p>
         </details>
       </section>

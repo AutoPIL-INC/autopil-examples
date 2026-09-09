@@ -93,7 +93,7 @@ regulations:
     name: "Day-Count Convention Standards (Actual/Actual vs. 30/360)"
     applicable_rules:
       - rule: "Accrued interest must be computed using the correct day-count convention for the instrument type — Actual/Actual for Treasuries, 30/360 for corporate/municipal bonds and agency MBS"
-        how_enforced: "affirmation_matching_agent_policy and exception_investigation_agent_policy task_bindings bind to day_count_reference — grounds FI-003's cash-break detection in a real reference table, not an LLM's own arithmetic"
+        how_enforced: "affirmation_matching_agent_policy and exception_investigation_agent_policy task_bindings bind to day_count_reference — grounds FI-003's cash-break detection in a real reference table, not an LLM's own arithmetic. The correction itself is a distinct, audited mutation: exception_investigation_agent_policy's break_remediation task_binding requires action: write, so submitting the corrected settlement amount is logged as a separate, gated action from the read-only detection step that found it"
 
 policies:
 
@@ -334,14 +334,27 @@ policies:
 
   # Exception investigation — widest reasoning scope of any role (whatever's relevant
   # to the specific flagged break), but still denied desk P&L/commission (the
-  # information-barrier boundary) and cannot resolve unilaterally. Extended for Fixed
-  # Income with the richest triage taxonomy in this demo — a cash break (day-count
-  # mismatch), a TBA pool-notification deadline at risk (proactive, before any fail),
-  # or a genuine Treasury/Agency MBS fails-to-deliver with FICC's named Fails Charge
-  # penalty — alongside its existing equities triage (timing lag, data/SSI error,
-  # fails-to-deliver risk, manipulation-flavored anomaly).
+  # information-barrier boundary) and cannot resolve unilaterally: break_remediation
+  # below is gated behind decision_node's human-approval interrupt(), never called from
+  # this role's own tool-calling loop — see trading_desk_ops_demo.py's decision_node.
+  # Extended for Fixed Income with the richest triage taxonomy in this demo — a cash
+  # break (day-count mismatch), a TBA pool-notification deadline at risk (proactive,
+  # before any fail), or a genuine Treasury/Agency MBS fails-to-deliver with FICC's
+  # named Fails Charge penalty — alongside its existing equities triage (timing lag,
+  # data/SSI error, fails-to-deliver risk, manipulation-flavored anomaly).
+  #
+  # action-level governance pilot (read|write|delete, autopil>=0.12.0): break_triage
+  # stays read-only; break_remediation is a genuine WRITE — this role submits the
+  # day-count correction record once a cash break (FI-003) is confirmed AND a human has
+  # approved it, and no other role in this policy file opts into write/delete at all
+  # (allowed_actions absent everywhere else defaults to read-only per the SDK's own
+  # deny-by-default rule) — same "one role can surface a problem, a narrower set can
+  # act on it" pattern policies/financial_services/consumer_banking.yaml's pilot
+  # established in the core AutoPIL repo. settlement_release/trade_execution/
+  # allocation_decision stay denied_tasks — this role still can't touch actual trade
+  # execution or settlement release, only the narrower remediation record.
   - name: exception_investigation_agent_policy
-    description: "Triages a flagged break using whatever settlement/affirmation data is relevant to that specific break — for equities: timing lag, data/SSI error, fails-to-deliver risk, or manipulation-flavored anomaly; for fixed income: a day-count/accrued-interest cash break, a TBA pool-notification deadline at risk, or a genuine Treasury/Agency MBS fails-to-deliver (FICC Fails Charge). No desk P&L or commission access — the information-barrier boundary EQ-003 demonstrates"
+    description: "Triages a flagged break using whatever settlement/affirmation data is relevant to that specific break — for equities: timing lag, data/SSI error, fails-to-deliver risk, or manipulation-flavored anomaly; for fixed income: a day-count/accrued-interest cash break, a TBA pool-notification deadline at risk, or a genuine Treasury/Agency MBS fails-to-deliver (FICC Fails Charge). No desk P&L or commission access — the information-barrier boundary EQ-003 demonstrates. Its one write — submitting a confirmed day-count correction — is gated separately by action-level governance, only reachable after human approval."
     agent_role: exception_investigation_agent
     allowed_sources:
       - dtcc_cns_data
@@ -356,6 +369,7 @@ policies:
       - ficc_mbsd_data
       - pool_notification_data
       - fails_charge_data
+      - settlement_correction_submission
     denied_sources:
       - desk_pnl_data
       - commission_data
@@ -364,15 +378,20 @@ policies:
       - pricing_data
     allowed_tasks:
       - break_triage
+      - break_remediation
     denied_tasks:
       - settlement_release
       - trade_execution
       - allocation_decision
     max_sensitivity: high
     require_task_for_sensitivity: high
+    allowed_actions: [read, write]
     task_bindings:
       - task: break_triage
         permitted_sources: [dtcc_cns_data, internal_position_ledger, ssi_data, trade_capture, counterparty_records, reg_sho_locate_data, share_inventory_data, day_count_reference, ficc_gsd_data, ficc_mbsd_data, pool_notification_data, fails_charge_data]
+      - task: break_remediation
+        permitted_sources: [settlement_correction_submission]
+        actions: [write]
     session_ttl_minutes: 1440
 
   # Compliance reporting — compiles the FINRA CAT-style audit record (equities) or the

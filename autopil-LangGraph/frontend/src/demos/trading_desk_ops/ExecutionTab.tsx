@@ -13,6 +13,7 @@ import {
   initialInput,
   type AuditSummary,
   type BreakKind,
+  type CaseMeta,
   type FeedEvent,
   type ReviewInterruptPayload,
   type TradingOpsState,
@@ -42,9 +43,16 @@ function groundingRegulationForAction(proposedAction: string) {
 function ToolCallRow({ event }: { event: FeedEvent & { type: "tool_call" } }) {
   const denied = event.status === "denied";
   const regulation = denied ? regulationForDenial(event.tool, event.role) : undefined;
+  // action-level governance pilot (autopil>=0.12.0) — omitted on every read (which is
+  // every tool_call except decision_node's post-approval settlement-correction write
+  // on a Fixed Income cash break), so this only ever adds a badge to the one row
+  // where the action gate is doing something beyond the default, same "don't clutter
+  // the common case" convention the AutoPIL dashboard's own action badge follows.
+  const action = event.action;
   return (
     <div className={`feed-row ${denied ? "denied" : "allowed"}`}>
       <span className="feed-badge">{denied ? "DENIED" : "ALLOWED"}</span>
+      {action && <span className={`feed-action-badge feed-action-${action}`}>{action.toUpperCase()}</span>}
       <span className="feed-role">{event.role}</span>
       <span className="feed-body">
         {event.tool}
@@ -296,7 +304,12 @@ function FeedItem({ event }: { event: FeedEvent }) {
   }
 }
 
-export default function ExecutionTab() {
+export default function ExecutionTab({ domain }: { domain: CaseMeta["domain"] }) {
+  // Equities and Fixed Income are separate sidebar entries now — each Execution tab
+  // only ever queues its own domain's cases, not all 10 mixed together. Same shared
+  // graph/assistantId underneath (trading_desk_ops classifies domain dynamically per
+  // case regardless), this is purely a display-side filter.
+  const caseIds = CASE_IDS.filter((id) => CASE_META[id].domain === domain);
   const [feed, setFeed] = useState<FeedEvent[]>([]);
   const [disposition, setDisposition] = useState<(FeedEvent & { type: "disposition" }) | null>(null);
   const [provider, setProvider] = useState<string>(PROVIDERS[0].value);
@@ -380,9 +393,9 @@ export default function ExecutionTab() {
         {stream.isLoading && <span className="running-indicator">running…</span>}
       </div>
 
-      <div className="section-title">Case Queue</div>
+      <div className="section-title">Case Queue — {DOMAIN_LABELS[domain]}</div>
       <div className="case-queue">
-        {CASE_IDS.map((caseId) => (
+        {caseIds.map((caseId) => (
           <CaseCard
             key={caseId}
             caseId={caseId}

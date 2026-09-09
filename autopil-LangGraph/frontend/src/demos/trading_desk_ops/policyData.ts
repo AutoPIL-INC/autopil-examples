@@ -10,6 +10,11 @@ export interface AgentPolicy {
   deniedSources: string[];
   maxSensitivity: string;
   sessionTtlMinutes: number;
+  // Action-level governance pilot (read|write|delete, autopil>=0.12.0). Omitted
+  // everywhere except exception_investigation_agent — every policy without this
+  // field defaults to read-only server-side (allowed_actions absent → ["read"]),
+  // so leaving it undefined here is the accurate mirror of that default, not a gap.
+  allowedActions?: string[];
 }
 
 // Order mirrors trading_desk_ops.yaml's own `policies:` list — trading_ops_orchestrator,
@@ -78,11 +83,12 @@ export const AGENT_POLICIES: AgentPolicy[] = [
   {
     role: "exception_investigation_agent",
     displayName: "Exception Investigation Agent",
-    description: "Triages a flagged break using whatever settlement/affirmation data is relevant — for equities: timing lag, data/SSI error, fails-to-deliver risk; for fixed income: a day-count cash break, a TBA pool-notification deadline at risk (proactive), or a genuine Treasury/Agency MBS fails-to-deliver (FICC Fails Charge). Widest reasoning scope of any role, but still denied desk P&L/commission — the information-barrier boundary.",
-    allowedSources: ["dtcc_cns_data", "internal_position_ledger", "ssi_data", "trade_capture", "counterparty_records", "reg_sho_locate_data", "share_inventory_data", "day_count_reference", "ficc_gsd_data", "ficc_mbsd_data", "pool_notification_data", "fails_charge_data"],
+    description: "Triages a flagged break using whatever settlement/affirmation data is relevant — for equities: timing lag, data/SSI error, fails-to-deliver risk; for fixed income: a day-count cash break, a TBA pool-notification deadline at risk (proactive), or a genuine Treasury/Agency MBS fails-to-deliver (FICC Fails Charge). Widest reasoning scope of any role, but still denied desk P&L/commission — the information-barrier boundary. Its one write — submitting a confirmed day-count correction — is gated separately by action-level governance, only reachable after human approval.",
+    allowedSources: ["dtcc_cns_data", "internal_position_ledger", "ssi_data", "trade_capture", "counterparty_records", "reg_sho_locate_data", "share_inventory_data", "day_count_reference", "ficc_gsd_data", "ficc_mbsd_data", "pool_notification_data", "fails_charge_data", "settlement_correction_submission"],
     deniedSources: ["desk_pnl_data", "commission_data", "client_account_data", "client_pii", "pricing_data"],
     maxSensitivity: "high",
-    sessionTtlMinutes: 120,
+    sessionTtlMinutes: 1440,
+    allowedActions: ["read", "write"],
   },
   {
     role: "compliance_reporting_agent",
@@ -250,7 +256,7 @@ export const REGULATIONS: Regulation[] = [
     applicableRules: [
       {
         rule: "Accrued interest must be computed using the correct day-count convention for the instrument type — Actual/Actual for Treasuries, 30/360 for corporate/municipal bonds and agency MBS",
-        howEnforced: "affirmation_matching_agent_policy and exception_investigation_agent_policy task_bindings bind to day_count_reference — grounds FI-003's cash-break detection in a real reference table, not an LLM's own arithmetic",
+        howEnforced: "affirmation_matching_agent_policy and exception_investigation_agent_policy task_bindings bind to day_count_reference — grounds FI-003's cash-break detection in a real reference table, not an LLM's own arithmetic. The correction itself is a distinct, audited mutation: exception_investigation_agent_policy's break_remediation task_binding requires action: write, so submitting the corrected settlement amount is logged as a separate, gated action from the read-only detection step that found it",
       },
     ],
   },

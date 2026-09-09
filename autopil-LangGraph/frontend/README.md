@@ -12,7 +12,9 @@ All 9 demos already run on the same `langgraph dev` process (`http://localhost:2
 `institutional_portfolio_review`, `aml_compliance`, `splunk_secops`,
 `hospital_revenue_cycle`, `care_coordination`, `quality_control`, and
 `trading_desk_ops`) — this app just switches which `assistantId` it streams from
-based on which demo is selected. No backend changes needed.
+based on which demo is selected. No backend changes needed. The sidebar shows 10 use
+cases, not 9 — `trading_desk_ops` is one backend graph but two sidebar entries
+(Equities / Fixed Income), see `src/demos/trading_desk_ops/` below.
 
 ## Structure
 
@@ -33,8 +35,16 @@ based on which demo is selected. No backend changes needed.
   `examples/care_coordination/frontend/src`.
 - `src/demos/quality_control/` — same, copied from
   `examples/quality_control/frontend/src`.
-- `src/demos/trading_desk_ops/` — same, copied from
-  `examples/trading_desk_ops/frontend/src`.
+- `src/demos/trading_desk_ops/` — copied from `examples/trading_desk_ops/frontend/src`,
+  with one departure from every other `src/demos/<name>/` pair: `DescriptionTab.tsx`/
+  `ExecutionTab.tsx` both take a `domain: "equities" | "fixed_income"` prop instead of
+  being fully self-contained. One shared graph/assistantId/policy on the backend, but
+  two separate sidebar entries here — "Equities" and "Fixed Income" render as
+  collapsible sub-items under a "Trading Desk Ops" group header (`SIDEBAR_GROUPS` in
+  `App.tsx`), each mounting the same components pinned to its own domain so the case
+  queue and copy never mix the two. The standalone `examples/trading_desk_ops/frontend/`
+  copy is untouched — it has no use-case sidebar to split, so this domain split is
+  specific to this shared app.
 - `src/industries.ts` — the industry dropdown under the AutoPIL wordmark; each
   industry's `demos` list is what the sidebar filters down to when it's selected — see
   that file's own header comment for which verticals are enabled vs. "coming soon".

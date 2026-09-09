@@ -1,4 +1,4 @@
-autopil[langgraph,mcp]>=0.10.0
+autopil[langgraph,mcp]>=0.12.0
 langgraph>=1.2.11
 langgraph-cli[inmem]>=0.4.31
 langchain-anthropic
